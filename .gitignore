@@ -65,6 +65,10 @@ dist-ssr/
 # Custom MaiBot config for Docker Deployments
 docker-config/
 
+# 开发容器隔离数据（与生产 data/ 和 docker-config/ 分离）
+data-dev/
+docker-config-dev/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -104,8 +108,9 @@ wheels/
 
 # Dev container config
 .devcontainer/devcontainer-lock.json
-# DooD 自动生成的 compose override，包含宿主机绝对路径，不可提交；仅在 devcontainer 内通过 COMPOSE_FILE 加载
+# DooD 自动生成：compose 覆写文件（包含宿主机绝对路径，不可提交）
 docker-compose.devcontainer.yml
+docker-compose.dood-pathfix.yml
 
 share/python-wheels/
 *.egg-info/

@@ -7,7 +7,9 @@
 - 重构 `.devcontainer/devcontainer.json`：改为从 Dockerfile 构建，引入 docker-outside-of-docker 支持，新增 WebUI 8001 端口转发，预配置开发环境变量（语言、时区、协议确认等），`postCreateCommand` 改用 `uv sync` 安装依赖，`postStartCommand` 自动配置 git safe.directory 和 docker-config/data 目录权限。
 - VS Code 开发容器预装 Copilot、DeepSeek V4、OAI Compatible 等智能体相关插件，并配置 ruff 作为 Python 默认格式化和自动 import 整理工具。
 - 重整 `.gitignore`：按模块分类组织条目，新增 `docker-config/` 忽略规则，统一 `.venv` 为目录匹配语义，消除重复条目。
-- 新增 `.devcontainer/setup-dood-override.sh` 脚本：自动检测宿主机项目路径并生成 `docker-compose.devcontainer.yml`，配合 `remoteEnv.COMPOSE_FILE` 仅于 devcontainer 内加载，修复 Docker-outside-of-Docker 场景下 bind mount 路径解析错误导致重启后数据丢失的问题。方案不修改项目 `docker-compose.yml`，容器外 `docker compose` 不受任何影响。
+- 新增 `.devcontainer/generate-compose-overrides.sh` 脚本：自动检测宿主机路径，生成两层 compose 覆写——`docker-compose.dood-pathfix.yml`（仅路径修正，用于部署到生产实例）和 `docker-compose.devcontainer.yml`（路径修正 + 完整隔离，用于测试实例）。
+- 新增 `.devcontainer/maibot-deploy` 选择器脚本：`maibot-deploy production` 部署到稳定实例，`maibot-deploy develop` 部署到测试实例，两个实例可同时运行、独立启停、互不影响。
+- 开发容器内的测试实例自动以独立项目名 `maibot-dev` 运行，使用不同端口（WebUI 18002、Napcat 16100、sqlite-web 18121）、容器名（`-dev` 后缀）和独立数据目录（`data-dev/`、`docker-config-dev/`），与生产实例完全隔离。方案不修改项目 `docker-compose.yml`。
 
 
 # 1.0.0-pre.24
