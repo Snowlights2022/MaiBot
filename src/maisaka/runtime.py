@@ -18,7 +18,7 @@ from src.cli.console import console
 from src.chat.heart_flow.heartFC_utils import CycleDetail
 from src.chat.message_receive.chat_manager import BotChatSession, chat_manager
 from src.chat.message_receive.message import SessionMessage
-from src.chat.utils.utils import is_mentioned_bot_in_message
+from src.chat.utils.utils import get_bot_account, is_mentioned_bot_in_message
 from src.common.data_models.mai_message_data_model import GroupInfo, MessageInfo, UserInfo
 from src.common.data_models.message_component_data_model import (
     ForwardNodeComponent,
@@ -27,6 +27,7 @@ from src.common.data_models.message_component_data_model import (
     TextComponent,
 )
 from src.common.logger import get_logger
+from src.common.message_repository import find_messages
 from src.common.utils.utils_config import ChatConfigUtils, ExpressionConfigUtils, JargonConfigUtils
 from src.config.config import global_config
 from src.core.tooling import ToolRegistry, ToolSpec
@@ -65,6 +66,7 @@ logger = get_logger("maisaka_runtime")
 
 MAX_INTERNAL_ROUNDS = 10
 MAX_RETAINED_MESSAGE_CACHE_SIZE = 200
+CONTEXT_RESTORE_FILL_RATIO = 0.5
 
 
 class MaisakaHeartFlowChatting:
@@ -224,11 +226,73 @@ class MaisakaHeartFlowChatting:
         if global_config.mcp.enable:
             await self._init_mcp()
 
+        await self._restore_recent_context_from_db()
         self._running = True
         self._ensure_background_tasks_running()
         self._schedule_message_turn()
         self._update_stage_status("空闲", "等待消息触发")
         logger.info(f"{self.log_prefix} Maisaka 运行时已启动")
+
+    async def _restore_recent_context_from_db(self) -> None:
+        """启动时从消息库恢复最近上下文，避免重启后丢失短期对话窗口。"""
+
+        if self._chat_history or self.message_cache:
+            return
+
+        try:
+            recent_messages = await asyncio.to_thread(
+                find_messages,
+                session_id=self.session_id,
+                limit=self._get_context_restore_limit(),
+                limit_mode="latest",
+                filter_command=True,
+            )
+        except Exception as exc:
+            logger.warning(f"{self.log_prefix} 恢复最近上下文失败: {exc}", exc_info=True)
+            return
+
+        restored_user_messages: list[SessionMessage] = []
+        restored_history: list[LLMContextMessage] = []
+        for message in recent_messages:
+            if message.is_notify:
+                continue
+
+            source_kind = self._resolve_restored_message_source_kind(message)
+            history_message = await self._reasoning_engine._build_history_message(
+                message,
+                source_kind=source_kind,
+            )
+            if history_message is not None:
+                restored_history.append(history_message)
+
+            if source_kind == "user":
+                restored_user_messages.append(message)
+
+        if not restored_history:
+            return
+
+        self._chat_history.extend(restored_history)
+        self.message_cache = restored_user_messages[-MAX_RETAINED_MESSAGE_CACHE_SIZE:]
+        self._last_processed_index = len(self.message_cache)
+        logger.info(
+            f"{self.log_prefix} 已恢复最近上下文: "
+            f"历史消息={len(restored_history)} 用户消息缓存={len(self.message_cache)}"
+        )
+
+    def _get_context_restore_limit(self) -> int:
+        """返回启动时最多回灌的真实消息数量。"""
+
+        return max(1, ceil(self._max_context_size * CONTEXT_RESTORE_FILL_RATIO))
+
+    @staticmethod
+    def _resolve_restored_message_source_kind(message: SessionMessage) -> str:
+        """根据发送者身份区分恢复消息来自用户还是麦麦自己。"""
+
+        user_info = message.message_info.user_info
+        bot_account = get_bot_account(message.platform)
+        if bot_account and user_info.user_id == bot_account:
+            return "guided_reply"
+        return "user"
 
     async def stop(self) -> None:
         """停止运行时主循环。"""
@@ -519,6 +583,12 @@ class MaisakaHeartFlowChatting:
             return 0.0
         return max(0.0, talk_value * self._talk_frequency_adjust)
 
+    @staticmethod
+    def _format_reply_frequency_for_display(frequency: float) -> str:
+        """将回复频率格式化为日志中易读的数值。"""
+        normalized_frequency = max(0.0, float(frequency))
+        return f"{normalized_frequency:.3f}（{normalized_frequency * 100:.1f}%）"
+
     def _get_base_reply_frequency(self) -> float:
         """返回当前会话类型对应的基础回复频率。"""
         if self.chat_stream.is_group_session:
@@ -672,6 +742,18 @@ class MaisakaHeartFlowChatting:
             return original_message
 
         return None
+
+    def _has_chat_history_message(self, message_id: str) -> bool:
+        """判断指定真实消息是否已经注入过 Maisaka 上下文。"""
+
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_message_id:
+            return False
+
+        return any(
+            str(getattr(history_message, "message_id", "") or "").strip() == normalized_message_id
+            for history_message in self._chat_history
+        )
 
     def _prune_processed_message_cache(self) -> None:
         """裁剪 runtime 已经消费过的旧消息。"""
@@ -1476,6 +1558,7 @@ class MaisakaHeartFlowChatting:
         body_lines = [
             f"聊天流名称：{getattr(self, 'session_name', self.session_id)}",
             f"聊天流ID：{self.session_id}",
+            f"当前回复频率：{self._format_reply_frequency_for_display(self._get_effective_reply_frequency())}",
         ]
 
         panel_title = "MaiSaka 循环"
