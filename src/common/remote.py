@@ -282,6 +282,7 @@ class TelemetryStatsUploadTask(AsyncTask):
             period_start=period_start,
             period_end=period_end,
             truncated=truncated,
+            client_info=self.info_dict,
         )
         if await self._send_stats_payload(payload):
             self._save_cursor(period_end)
