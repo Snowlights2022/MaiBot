@@ -55,6 +55,7 @@ export function PluginCard({
               pluginId={plugin.id}
               manifest={plugin.manifest}
               installed={plugin.installed}
+              marketplaceIconUrl={plugin.assets?.icon_64}
               className="h-9 w-9 rounded-md"
               iconClassName="h-4 w-4"
             />
@@ -119,10 +120,11 @@ export function PluginCard({
         </div>
       </CardContent>
       <CardFooter className="px-4 pb-4 pt-1.5">
-        <div className="flex w-full items-center justify-end gap-2">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:items-center sm:justify-end">
           <Button 
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() => navigate({ to: '/plugin-detail', search: { pluginId: plugin.id } })}
           >
             查看详情
@@ -131,6 +133,7 @@ export function PluginCard({
             needsUpdate(plugin) ? (
               <Button 
                 size="sm"
+                className="w-full sm:w-auto"
                 disabled={!gitStatus?.installed || (maimaiVersion !== null && !checkPluginCompatibility(plugin))}
                 title={
                   !gitStatus?.installed
@@ -148,6 +151,7 @@ export function PluginCard({
               <Button 
                 variant="destructive" 
                 size="sm"
+                className="w-full sm:w-auto"
                 disabled={!gitStatus?.installed}
                 title={!gitStatus?.installed ? 'Git 未安装' : undefined}
                 onClick={() => onUninstall(plugin)}
@@ -159,6 +163,7 @@ export function PluginCard({
           ) : (
             <Button 
               size="sm"
+              className="w-full sm:w-auto"
               disabled={
                 !gitStatus?.installed || 
                 loadProgress?.operation === 'install' ||
