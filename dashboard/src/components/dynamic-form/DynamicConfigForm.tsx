@@ -1,5 +1,6 @@
+import { Link } from '@tanstack/react-router'
+import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react'
 import * as React from 'react'
-import * as LucideIcons from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -39,13 +40,32 @@ function resolveFieldSectionTitle(field: FieldSchema) {
   return resolveLocalizedText(field.label, undefined, field.name)
 }
 
-function SectionIcon({ iconName }: { iconName?: string }) {
-  if (!iconName) return null
-  const IconComponent = LucideIcons[iconName as keyof typeof LucideIcons] as
-    | React.ComponentType<{ className?: string }>
-    | undefined
-  if (!IconComponent) return null
-  return <IconComponent className="h-5 w-5 text-muted-foreground" />
+function orderInlineFields(schema: ConfigSchema, fields: FieldSchema[]) {
+  if (schema.className !== 'bot') {
+    return fields
+  }
+
+  const priorityByName = new Map([
+    ['nickname', 0],
+    ['platform', 1],
+  ])
+
+  return fields
+    .map((field, index) => ({ field, index }))
+    .sort((left, right) => {
+      const leftPriority = priorityByName.get(left.field.name) ?? 100
+      const rightPriority = priorityByName.get(right.field.name) ?? 100
+      return leftPriority - rightPriority || left.index - right.index
+    })
+    .map(({ field }) => field)
+}
+
+function countSectionItems(schema: ConfigSchema) {
+  return schema.fields.length + Object.keys(schema.nested ?? {}).length
+}
+
+function shouldShowSectionCollapse(sectionKey: string, schema: ConfigSchema) {
+  return sectionKey === 'a_memorix' && countSectionItems(schema) > 1
 }
 
 export function AdvancedSettingsButton({
@@ -67,11 +87,31 @@ export function AdvancedSettingsButton({
   )
 }
 
+function PromptGeneratorEntryCard() {
+  return (
+    <Link
+      to="/config/prompt-generator"
+      className="group flex items-start gap-3 rounded-lg border bg-muted/20 p-3 text-left transition-colors hover:bg-muted/40"
+    >
+      <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-background text-primary">
+        <Sparkles className="h-4 w-4" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 space-y-1">
+        <span className="block text-sm font-semibold text-foreground group-hover:text-primary">人设生成器</span>
+        <span className="block text-xs leading-5 text-muted-foreground">
+          根据人格设定生成或调整麦麦的人设描述。
+        </span>
+      </span>
+    </Link>
+  )
+}
+
 function DynamicConfigSection({
   advancedVisible,
   basePath,
   children,
   collapsedByDefault,
+  collapsible = true,
   hooks,
   level,
   nestedSchema,
@@ -84,6 +124,7 @@ function DynamicConfigSection({
   basePath: string
   children?: React.ReactNode
   collapsedByDefault?: boolean
+  collapsible?: boolean
   hooks: FieldHookRegistry
   level: number
   nestedSchema: ConfigSchema
@@ -92,44 +133,56 @@ function DynamicConfigSection({
   sectionTitle: string
   values: Record<string, unknown>
 }) {
-  const [collapsed, setCollapsed] = React.useState(Boolean(collapsedByDefault))
+  const [collapsed, setCollapsed] = React.useState(Boolean(collapsible && collapsedByDefault))
   const contentId = React.useId()
+  const contentVisible = !collapsible || !collapsed
 
   return (
     <Card className="min-w-0">
-      <CardHeader className={collapsed ? 'pb-4' : 'border-b border-border/50 pb-4'}>
-        <div className="flex items-start justify-between gap-4">
+      <CardHeader className={contentVisible ? 'border-b border-border/50 pb-3' : 'pb-3'}>
+        <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <SectionIcon iconName={nestedSchema.uiIcon} />
-              <CardTitle className="text-lg text-primary">{sectionTitle}</CardTitle>
+              <CardTitle className="text-base text-primary">{sectionTitle}</CardTitle>
             </div>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            aria-controls={contentId}
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed((current) => !current)}
-          >
-            {collapsed ? '展开' : '收起'}
-          </Button>
+          {collapsible && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 w-7 px-0"
+              aria-label={collapsed ? '展开' : '收起'}
+              aria-controls={contentId}
+              aria-expanded={!collapsed}
+              title={collapsed ? '展开' : '收起'}
+              onClick={() => setCollapsed((current) => !current)}
+            >
+              {collapsed ? (
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <ChevronUp className="h-4 w-4" aria-hidden="true" />
+              )}
+            </Button>
+          )}
         </div>
       </CardHeader>
-      {!collapsed && (
-        <CardContent id={contentId} className="pt-4">
+      {contentVisible && (
+        <CardContent id={contentId} className="pt-3">
           {children ?? (
-            <DynamicConfigForm
-              schema={nestedSchema}
-              values={values}
-              onChange={(field, value) => onChange(`${sectionKey}.${field}`, value)}
-              basePath={basePath}
-              hooks={hooks}
-              level={level}
-              advancedVisible={advancedVisible}
-              sectionColumns={1}
-            />
+            <div className="space-y-3">
+              <DynamicConfigForm
+                schema={nestedSchema}
+                values={values}
+                onChange={(field, value) => onChange(`${sectionKey}.${field}`, value)}
+                basePath={basePath}
+                hooks={hooks}
+                level={level}
+                advancedVisible={advancedVisible}
+                sectionColumns={1}
+              />
+              {sectionKey === 'personality' && <PromptGeneratorEntryCard />}
+            </div>
           )}
         </CardContent>
       )}
@@ -141,6 +194,7 @@ function NestedDynamicConfigSection({
   advancedVisible,
   basePath,
   collapsedByDefault,
+  collapsible = true,
   hooks,
   level,
   nestedSchema,
@@ -151,6 +205,7 @@ function NestedDynamicConfigSection({
   advancedVisible: boolean
   basePath: string
   collapsedByDefault?: boolean
+  collapsible?: boolean
   hooks: FieldHookRegistry
   level: number
   nestedSchema: ConfigSchema
@@ -158,33 +213,42 @@ function NestedDynamicConfigSection({
   sectionTitle: string
   values: Record<string, unknown>
 }) {
-  const [collapsed, setCollapsed] = React.useState(Boolean(collapsedByDefault))
+  const [collapsed, setCollapsed] = React.useState(Boolean(collapsible && collapsedByDefault))
   const contentId = React.useId()
+  const contentVisible = !collapsible || !collapsed
 
   return (
     <Card className="min-w-0 border-border/70 bg-muted/20 shadow-none">
-      <CardHeader className={collapsed ? 'px-4 py-3' : 'border-b border-border/50 px-4 py-3'}>
-        <div className="flex items-start justify-between gap-4">
+      <CardHeader className={contentVisible ? 'border-b border-border/50 px-3 py-2.5' : 'px-3 py-2.5'}>
+        <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-2">
-              <SectionIcon iconName={nestedSchema.uiIcon} />
               <CardTitle className="text-sm text-primary">{sectionTitle}</CardTitle>
             </div>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            aria-controls={contentId}
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed((current) => !current)}
-          >
-            {collapsed ? '展开' : '收起'}
-          </Button>
+          {collapsible && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 w-7 px-0"
+              aria-label={collapsed ? '展开' : '收起'}
+              aria-controls={contentId}
+              aria-expanded={!collapsed}
+              title={collapsed ? '展开' : '收起'}
+              onClick={() => setCollapsed((current) => !current)}
+            >
+              {collapsed ? (
+                <ChevronDown className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <ChevronUp className="h-4 w-4" aria-hidden="true" />
+              )}
+            </Button>
+          )}
         </div>
       </CardHeader>
-      {!collapsed && (
-        <CardContent id={contentId} className="px-4 pb-4 pt-4">
+      {contentVisible && (
+        <CardContent id={contentId} className="px-3 pb-3 pt-3">
           <DynamicConfigForm
             schema={nestedSchema}
             values={values}
@@ -303,7 +367,7 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
   }
 
   const schemaHasVisibleContent = React.useCallback(
-    (targetSchema: ConfigSchema, targetBasePath: string): boolean => {
+    function hasVisibleContent(targetSchema: ConfigSchema, targetBasePath: string): boolean {
       const targetFields = targetSchema.fields ?? []
       const hasVisibleInlineField = targetFields.some((field) => {
         const fieldPath = buildFieldPath(targetBasePath, field.name)
@@ -341,13 +405,13 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
           return true
         }
 
-        return schemaHasVisibleContent(nestedSchema, nestedFieldPath)
+        return hasVisibleContent(nestedSchema, nestedFieldPath)
       })
     },
     [hooks, resolvedAdvancedVisible],
   )
 
-  const inlineFields = schema.fields.filter(shouldRenderFieldInline)
+  const inlineFields = orderInlineFields(schema, schema.fields.filter(shouldRenderFieldInline))
   const inlineNestedFieldNames = new Set(
     inlineFields
       .filter((field) => Boolean(schema.nested?.[field.name]))
@@ -391,15 +455,14 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
         row.length > 1 ? (
           <div
             key={row.map((field) => field.name).join('|')}
-            className="grid min-w-0 gap-4 py-1 md:grid-cols-[repeat(var(--field-row-count),minmax(0,1fr))]"
-            style={{ '--field-row-count': row.length } as React.CSSProperties}
+            className="grid min-w-0 gap-3 py-0.5 md:grid-cols-[repeat(auto-fit,minmax(min(18rem,100%),1fr))]"
           >
             {row.map((field) => (
               <div key={field.name} className="min-w-0">{renderField(field)}</div>
             ))}
           </div>
         ) : (
-          <div key={row[0].name} className="min-w-0 py-1">{renderField(row[0])}</div>
+          <div key={row[0].name} className="min-w-0 py-0.5">{renderField(row[0])}</div>
         )
       ))}
     </>
@@ -409,7 +472,7 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
     <>
       {groupFieldsByRow(fields).map((row, index) => (
         <React.Fragment key={row.map((field) => field.name).join('|')}>
-          {index > 0 && <Separator className="my-2 bg-border/50" />}
+          {index > 0 && <Separator className="my-1.5 bg-border/50" />}
           {renderRows([row])}
         </React.Fragment>
       ))}
@@ -417,7 +480,7 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
   )
 
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="min-w-0 space-y-4">
       {visibleFields.length > 0 && (
         <div>
           {renderFieldList(visibleFields)}
@@ -466,10 +529,10 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
                     key={key}
                     advancedVisible={resolvedAdvancedVisible}
                     collapsedByDefault={Boolean(nestedField['x-collapsed-by-default'])}
+                    collapsible={false}
                     nestedSchema={{
                       ...nestedSchema,
                       classDoc: resolveFieldSectionTitle(nestedField),
-                      uiIcon: nestedField['x-icon'],
                     }}
                     values={{}}
                     onChange={onChange}
@@ -525,6 +588,7 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
                 key={key}
                 advancedVisible={resolvedAdvancedVisible}
                 collapsedByDefault={Boolean(nestedField?.['x-collapsed-by-default'])}
+                collapsible={shouldShowSectionCollapse(key, nestedSchema)}
                 nestedSchema={nestedSchema}
                 values={(values[key] as Record<string, unknown>) || {}}
                 onChange={onChange}
@@ -543,6 +607,7 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
               advancedVisible={resolvedAdvancedVisible}
               basePath={nestedFieldPath}
               collapsedByDefault={Boolean(nestedField?.['x-collapsed-by-default'])}
+              collapsible={false}
               hooks={hooks}
               level={level + 1}
               nestedSchema={nestedSchema}
@@ -558,9 +623,25 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
           )
 
           if (level === 0 && sectionColumns === 2 && visibleNestedSections.length > 1) {
+            const leftColumnSections = visibleNestedSections.filter((_, index) => index % 2 === 0)
+            const rightColumnSections = visibleNestedSections.filter((_, index) => index % 2 === 1)
+
             return (
-              <div className="grid min-w-0 gap-4 md:grid-cols-2">
-                {visibleNestedSections}
+              <div className="grid min-w-0 gap-3 md:grid-cols-2">
+                <div className="min-w-0 space-y-3">
+                  {leftColumnSections.map((section) => (
+                    <React.Fragment key={section.key}>
+                      {section}
+                    </React.Fragment>
+                  ))}
+                </div>
+                <div className="min-w-0 space-y-3">
+                  {rightColumnSections.map((section) => (
+                    <React.Fragment key={section.key}>
+                      {section}
+                    </React.Fragment>
+                  ))}
+                </div>
               </div>
             )
           }

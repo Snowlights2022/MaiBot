@@ -83,15 +83,6 @@ def _build_send_result(
     }
 
 
-def _get_selected_expression_habits(reply_result: ReplyGenerationResult) -> str:
-    """读取 replyer 本轮实际使用的表达方式说明。"""
-
-    extra = reply_result.metrics.extra
-    if not isinstance(extra, dict):
-        return ""
-    return str(extra.get("selected_expression_habits") or "").strip()
-
-
 async def handle_tool(
     tool_ctx: BuiltinToolRuntimeContext,
     invocation: ToolInvocation,
@@ -147,7 +138,6 @@ async def handle_tool(
         )
 
     replyer_chat_history = list(tool_ctx.runtime._chat_history)
-
     try:
         success, reply_result = await replyer.generate_reply_with_context(
             reply_reason=latest_thought,
@@ -211,7 +201,7 @@ async def handle_tool(
                     stream_id=tool_ctx.runtime.session_id,
                     processed_plain_text=segment,
                     set_reply=segment_set_quote,
-                    reply_message=target_message if segment_set_quote else None,
+                    reply_message=target_message,
                     selected_expressions=reply_result.selected_expression_ids or None,
                     typing=index > 0,
                     sync_to_maisaka_history=True,
@@ -270,10 +260,6 @@ async def handle_tool(
 
     if tool_ctx.runtime.chat_stream.platform == CLI_PLATFORM_NAME:
         tool_ctx.append_guided_reply_to_chat_history(combined_reply_text)
-    tool_ctx.append_replyer_expression_annotation(
-        selected_expression_ids=reply_result.selected_expression_ids,
-        expression_habits=_get_selected_expression_habits(reply_result),
-    )
     reply_metadata["sent_message_ids"] = sent_message_ids
     reply_metadata["send_results"] = send_results
     track_reply_effect = getattr(tool_ctx.runtime, "track_reply_effect", None)

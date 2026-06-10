@@ -18,8 +18,15 @@ from src.services.llm_service import LLMServiceClient
 
 from .behavior_pattern_consolidator import behavior_pattern_consolidator
 from .behavior_pattern_maintenance import behavior_pattern_maintenance
-from .behavior_pattern_store import upsert_behavior_pattern
-from .behavior_scenario import BehaviorScenarioProfile, behavior_scenario_analyzer
+from .behavior_pattern_store import (
+    ACTOR_GROUP_COLLECTIVE,
+    ACTOR_MAIBOT_SELF,
+    ACTOR_OTHER_USER,
+    LEARNING_OBSERVED,
+    LEARNING_SELF_REFLECTION,
+    upsert_behavior_pattern,
+)
+from .behavior_scenario import BehaviorScenarioProfile, BehaviorScenarioSegment, behavior_scenario_analyzer
 
 if TYPE_CHECKING:
     from src.chat.message_receive.message import SessionMessage
@@ -40,6 +47,9 @@ class BehaviorCandidate:
     action: str
     outcome: str
     source_ids: list[str]
+    segment_id: str = ""
+    actor_type: str = ACTOR_OTHER_USER
+    learning_type: str = LEARNING_OBSERVED
 
 
 @dataclass(frozen=True)
@@ -144,6 +154,20 @@ def _coerce_source_ids(raw_value: Any) -> list[str]:
     return source_ids
 
 
+def _coerce_actor_type(raw_value: Any) -> str:
+    normalized_value = str(raw_value or "").strip().lower()
+    if normalized_value in {ACTOR_OTHER_USER, ACTOR_GROUP_COLLECTIVE, ACTOR_MAIBOT_SELF, "unknown"}:
+        return normalized_value
+    return ""
+
+
+def _coerce_learning_type(raw_value: Any) -> str:
+    normalized_value = str(raw_value or "").strip().lower()
+    if normalized_value in {LEARNING_OBSERVED, LEARNING_SELF_REFLECTION}:
+        return normalized_value
+    return ""
+
+
 def _compact_log_text(text: str, *, max_length: int = 1200) -> str:
     """压缩长文本到适合日志展示的长度。"""
 
@@ -153,20 +177,47 @@ def _compact_log_text(text: str, *, max_length: int = 1200) -> str:
     return compacted_text[:max_length].rstrip() + "..."
 
 
-def _parse_behavior_item(raw_item: Any, *, scene_start: str) -> Optional[BehaviorCandidate]:
+def _parse_behavior_item(
+    raw_item: Any,
+    *,
+    scene_start: str,
+    scene_start_by_segment_id: Optional[dict[str, str]] = None,
+) -> Optional[BehaviorCandidate]:
     if not isinstance(raw_item, dict):
         return None
 
     action = str(raw_item.get("action") or "").strip()
     outcome = str(raw_item.get("outcome") or "").strip()
     source_ids = _coerce_source_ids(raw_item.get("source_ids"))
+    segment_id = str(raw_item.get("segment_id") or raw_item.get("scene_id") or "").strip()
+    actor_type = _coerce_actor_type(raw_item.get("actor_type"))
+    learning_type = _coerce_learning_type(raw_item.get("learning_type"))
     trigger = scene_start.strip()
-    if not trigger or not action or not outcome:
+    if segment_id and scene_start_by_segment_id:
+        trigger = scene_start_by_segment_id.get(segment_id, trigger).strip()
+    if not trigger or not action or not outcome or not actor_type or not learning_type:
         return None
-    return BehaviorCandidate(trigger=trigger, action=action, outcome=outcome, source_ids=source_ids)
+    if actor_type == ACTOR_MAIBOT_SELF and learning_type != LEARNING_SELF_REFLECTION:
+        return None
+    if actor_type != ACTOR_MAIBOT_SELF and learning_type != LEARNING_OBSERVED:
+        return None
+    return BehaviorCandidate(
+        trigger=trigger,
+        action=action,
+        outcome=outcome,
+        source_ids=source_ids,
+        segment_id=segment_id,
+        actor_type=actor_type,
+        learning_type=learning_type,
+    )
 
 
-def parse_behavior_response_with_diagnostics(response: str, *, scene_start: str) -> BehaviorParseResult:
+def parse_behavior_response_with_diagnostics(
+    response: str,
+    *,
+    scene_start: str,
+    scene_start_by_segment_id: Optional[dict[str, str]] = None,
+) -> BehaviorParseResult:
     """解析行为学习模型返回的 JSON，并保留诊断信息供日志输出。"""
 
     normalized_response = _strip_json_code_fence(response or "")
@@ -208,7 +259,11 @@ def parse_behavior_response_with_diagnostics(response: str, *, scene_start: str)
     candidates: list[BehaviorCandidate] = []
     invalid_item_count = 0
     for raw_item in parsed_response:
-        candidate = _parse_behavior_item(raw_item, scene_start=normalized_scene_start)
+        candidate = _parse_behavior_item(
+            raw_item,
+            scene_start=normalized_scene_start,
+            scene_start_by_segment_id=scene_start_by_segment_id,
+        )
         if candidate is not None:
             candidates.append(candidate)
         else:
@@ -368,21 +423,30 @@ class BehaviorLearner:
     ) -> bool:
         """执行已经获得并发闸门的行为学习批次。"""
 
-        scene_profile = await self._analyze_learning_scene(
+        scene_segments = await self._analyze_learning_scene_segments(
             pending_messages,
             learning_session_id=learning_session_id,
         )
-        scene_start = scene_profile.to_learning_start_text()
+        if not scene_segments:
+            logger.debug(f"{learning_session_id} 行为学习未形成可用场景片段，跳过本批次")
+            return False
+
+        scene_start_by_segment_id = {
+            segment.segment_id: segment.profile.tag_cluster_text()
+            for segment in scene_segments
+            if segment.profile.tag_cluster_text()
+        }
+        primary_segment = scene_segments[0]
+        scene_start = scene_start_by_segment_id.get(primary_segment.segment_id, "")
         if not scene_start:
-            logger.debug(f"{learning_session_id} 行为学习未形成可用场景画像，跳过本批次")
+            logger.debug(f"{learning_session_id} 行为学习未形成可用 tag 场景，跳过本批次")
             return False
 
         prompt = load_prompt(
             "learn_behavior",
             bot_name=global_config.bot.nickname,
             chat_str="聊天记录将在后续多条 user message 中给出；请以每条消息中的 source_id 作为来源行编号。",
-            scene_profile=scene_profile.to_prompt_text(),
-            scene_start=scene_start,
+            scene_profile=self._format_scene_segments_for_prompt(scene_segments),
         )
 
         try:
@@ -402,7 +466,11 @@ class BehaviorLearner:
             logger.error(f"学习行为表现失败: {exc}")
             return False
 
-        parse_result = parse_behavior_response_with_diagnostics(response, scene_start=scene_start)
+        parse_result = parse_behavior_response_with_diagnostics(
+            response,
+            scene_start=scene_start,
+            scene_start_by_segment_id=scene_start_by_segment_id,
+        )
         self._log_parse_diagnostics(
             learning_session_id=learning_session_id,
             response=response,
@@ -428,31 +496,41 @@ class BehaviorLearner:
         write_success_count = 0
         write_failed_count = 0
         for candidate in behavior_candidates[:12]:
+            matched_segment = self._select_segment_for_candidate(candidate, scene_segments)
+            candidate_scene_start = scene_start_by_segment_id.get(matched_segment.segment_id, scene_start)
             logger.info(
                 f"{learning_session_id} 准备写入行为经验路径: "
-                f"action={candidate.action} outcome={candidate.outcome} source_ids={candidate.source_ids}"
+                f"segment_id={matched_segment.segment_id} action={candidate.action} "
+                f"outcome={candidate.outcome} actor_type={candidate.actor_type} "
+                f"learning_type={candidate.learning_type} source_ids={candidate.source_ids}"
             )
             path = upsert_behavior_pattern(
-                trigger=candidate.trigger,
+                trigger=candidate_scene_start,
                 action=candidate.action,
                 outcome=candidate.outcome,
                 source_ids=candidate.source_ids,
                 session_id=learning_session_id,
-                scenario_profile=scene_profile,
-                scene_start=scene_start,
+                scenario_profile=matched_segment.profile,
+                scene_start=candidate_scene_start,
+                actor_type=candidate.actor_type,
+                learning_type=candidate.learning_type,
             )
             if path is None:
                 write_failed_count += 1
                 logger.warning(
                     f"{learning_session_id} 行为经验路径写入未成功: "
-                    f"action={candidate.action} outcome={candidate.outcome} source_ids={candidate.source_ids}"
+                    f"segment_id={matched_segment.segment_id} action={candidate.action} "
+                    f"outcome={candidate.outcome} actor_type={candidate.actor_type} "
+                    f"learning_type={candidate.learning_type} source_ids={candidate.source_ids}"
                 )
                 continue
             wrote_pattern = True
             write_success_count += 1
             logger.info(
                 f"学习到行为经验路径 [ID: {path.id}]: "
-                f"场景={candidate.trigger} 行为={candidate.action} 结果={candidate.outcome}"
+                f"场景片段={matched_segment.segment_id} 场景={candidate_scene_start} "
+                f"主体={candidate.actor_type} 类型={candidate.learning_type} "
+                f"行为={candidate.action} 结果={candidate.outcome}"
             )
 
         logger.info(
@@ -513,8 +591,46 @@ class BehaviorLearner:
         for index, candidate in enumerate(parse_result.candidates[:12], start=1):
             logger.info(
                 f"{learning_session_id} 行为学习解析候选[{index}]: "
+                f"segment_id={candidate.segment_id or 'auto'} "
+                f"actor_type={candidate.actor_type} learning_type={candidate.learning_type} "
                 f"action={candidate.action} outcome={candidate.outcome} source_ids={candidate.source_ids}"
             )
+
+    @staticmethod
+    def _format_scene_segments_for_prompt(segments: Sequence[BehaviorScenarioSegment]) -> str:
+        """把场景片段压成学习 prompt 中稳定可引用的 JSON。"""
+
+        return json.dumps(
+            {"segments": [segment.to_prompt_payload() for segment in segments]},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @staticmethod
+    def _select_segment_for_candidate(
+        candidate: BehaviorCandidate,
+        segments: Sequence[BehaviorScenarioSegment],
+    ) -> BehaviorScenarioSegment:
+        """根据候选的 segment_id 或 source_ids 选择最贴近的场景片段。"""
+
+        if not segments:
+            return BehaviorScenarioSegment(segment_id="s1", title="主场景", profile=BehaviorScenarioProfile())
+
+        if candidate.segment_id:
+            for segment in segments:
+                if segment.segment_id == candidate.segment_id:
+                    return segment
+
+        candidate_source_ids = set(candidate.source_ids)
+        best_segment = segments[0]
+        best_overlap = -1
+        for segment in segments:
+            segment_source_ids = set(segment.source_ids)
+            overlap = len(candidate_source_ids & segment_source_ids)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_segment = segment
+        return best_segment
 
     async def _analyze_learning_scene(
         self,
@@ -529,8 +645,9 @@ class BehaviorLearner:
             return BehaviorScenarioProfile()
 
         async def run_scene_prompt(prompt: str) -> str:
-            generation_result = await behavior_scene_model.generate_response(
-                prompt,
+            scene_messages = await self._build_scene_analysis_messages(messages, prompt)
+            generation_result = await behavior_scene_model.generate_response_with_messages(
+                lambda _client: scene_messages,
                 options=LLMGenerationOptions(temperature=0.2),
             )
             response = generation_result.response or ""
@@ -538,6 +655,7 @@ class BehaviorLearner:
                 prompt,
                 session_id=learning_session_id,
                 source_message_count=len(messages),
+                request_messages=scene_messages,
                 output_content=response,
             )
             return response
@@ -546,6 +664,61 @@ class BehaviorLearner:
             context_text=context_text,
             sub_agent_runner=run_scene_prompt,
         )
+
+    async def _analyze_learning_scene_segments(
+        self,
+        messages: list["SessionMessage"],
+        *,
+        learning_session_id: str,
+    ) -> list[BehaviorScenarioSegment]:
+        """在行为学习前，将同一学习窗口拆成 1~3 个可独立学习的场景片段。"""
+
+        context_text = await self._build_learning_context_text(messages)
+        if not context_text:
+            return []
+
+        async def run_scene_prompt(prompt: str) -> str:
+            scene_messages = await self._build_scene_analysis_messages(messages, prompt)
+            generation_result = await behavior_scene_model.generate_response_with_messages(
+                lambda _client: scene_messages,
+                options=LLMGenerationOptions(temperature=0.2),
+            )
+            response = generation_result.response or ""
+            self._log_learning_scene_preview(
+                prompt,
+                session_id=learning_session_id,
+                source_message_count=len(messages),
+                request_messages=scene_messages,
+                output_content=response,
+            )
+            return response
+
+        segments = await behavior_scenario_analyzer.analyze_segments(
+            context_text=context_text,
+            sub_agent_runner=run_scene_prompt,
+        )
+        if segments:
+            logger.info(
+                f"{learning_session_id} 行为学习场景片段分析完成: "
+                f"片段数={len(segments)} "
+                f"片段={[{'id': segment.segment_id, 'sources': segment.source_ids, 'title': segment.title} for segment in segments]}"
+            )
+            return segments
+
+        profile = await behavior_scenario_analyzer.analyze(
+            context_text=context_text,
+            sub_agent_runner=run_scene_prompt,
+        )
+        if not profile.has_signal:
+            return []
+        return [
+            BehaviorScenarioSegment(
+                segment_id="s1",
+                title=profile.summary or "主场景",
+                source_ids=[str(index) for index in range(1, len(messages) + 1)],
+                profile=profile,
+            )
+        ]
 
     async def _build_learning_context_text(self, messages: list["SessionMessage"]) -> str:
         """构建场景分析用的紧凑学习窗口文本。"""
@@ -573,6 +746,58 @@ class BehaviorLearner:
             )
         return "\n\n".join(context_lines).strip()
 
+    async def _build_scene_analysis_messages(
+        self,
+        messages: list["SessionMessage"],
+        system_prompt: str,
+    ) -> list[Message]:
+        """构造场景概括请求：规则在 system，真实聊天作为后续 user 消息。"""
+
+        scene_messages = [
+            MessageBuilder()
+            .set_role(RoleType.System)
+            .add_text_content(
+                f"{system_prompt}\n\n"
+                "注意：聊天记录会在后续多条 user message 中给出。每条消息内的 source_id "
+                "是本轮场景概括的来源编号；speaker=SELF 表示这条真实聊天消息由麦麦发出。"
+            )
+            .build()
+        ]
+
+        for index, message in enumerate(messages, start=1):
+            await message.process()
+            user_info = message.message_info.user_info
+            speaker_name = user_info.user_cardname or user_info.user_nickname or "未知用户"
+            speaker_kind = "SELF" if is_bot_self(message.platform, user_info.user_id) else "USER"
+            content = (message.processed_plain_text or "").strip()
+            if not content:
+                content = "[空消息]"
+            scene_messages.append(
+                MessageBuilder()
+                .set_role(RoleType.User)
+                .add_text_content(
+                    "\n".join(
+                        [
+                            f"[source_id:{index}]",
+                            f"[speaker:{speaker_kind}]",
+                            f"[name:{speaker_name}]",
+                            f"[time:{message.timestamp.strftime('%H:%M:%S')}]",
+                            "[content]",
+                            content,
+                        ]
+                    )
+                )
+                .build()
+            )
+
+        scene_messages.append(
+            MessageBuilder()
+            .set_role(RoleType.User)
+            .add_text_content("请根据以上真实聊天消息输出场景片段 JSON。")
+            .build()
+        )
+        return scene_messages
+
     async def _build_multi_learning_messages(
         self,
         messages: list["SessionMessage"],
@@ -587,7 +812,8 @@ class BehaviorLearner:
                 f"{system_prompt}\n\n"
                 "注意：聊天记录会在后续多条 user message 中给出。每条消息内的 source_id "
                 "是本轮学习的来源编号；speaker=SELF 的消息可以作为行为链的一部分，"
-                "但输出的行为表现不要直接写 SELF 或具体昵称。"
+                "如果行为主体是 speaker=SELF，请用 actor_type=maibot_self 与 "
+                "learning_type=self_reflection 表示；但 action/outcome 不要直接写 SELF 或具体昵称。"
             )
             .build()
         ]
@@ -632,13 +858,15 @@ class BehaviorLearner:
         *,
         session_id: str,
         source_message_count: int,
+        request_messages: Optional[list[Message]] = None,
         output_content: str,
     ) -> None:
         """保存行为学习前的场景画像请求预览。"""
 
         try:
             preview_access = PromptCLIVisualizer.build_prompt_preview_access(
-                [
+                request_messages
+                or [
                     MessageBuilder()
                     .set_role(RoleType.User)
                     .add_text_content(prompt)
@@ -651,7 +879,8 @@ class BehaviorLearner:
                     f"会话ID: {session_id}\n"
                     f"Learner会话ID: {self.session_id}\n"
                     f"来源: behavior_learning_scene\n"
-                    f"真实聊天消息数: {source_message_count}"
+                    f"真实聊天消息数: {source_message_count}\n"
+                    f"构建消息数: {len(request_messages or [])}"
                 ),
                 output_content=output_content,
             )
@@ -756,6 +985,9 @@ class BehaviorLearner:
                     action=candidate.action.strip(),
                     outcome=candidate.outcome.strip(),
                     source_ids=valid_source_ids,
+                    segment_id=candidate.segment_id.strip(),
+                    actor_type=candidate.actor_type,
+                    learning_type=candidate.learning_type,
                 )
             )
 

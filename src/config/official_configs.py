@@ -36,7 +36,6 @@ class BotConfig(ConfigBase):
     """机器人配置类"""
 
     __ui_label__ = "基础"
-    __ui_icon__ = "bot"
 
     platform: str = Field(
         default="",
@@ -121,7 +120,6 @@ class PersonalityConfig(ConfigBase):
 
     __ui_parent__ = "bot"
     __ui_label__ = "人格"
-    __ui_icon__ = "user-circle"
 
     personality: str = Field(
         default="你是一个大二女大学生，现在正在上网和群友聊天。",
@@ -264,13 +262,14 @@ class VisualConfig(ConfigBase):
     """视觉配置类"""
 
     __ui_label__ = "视觉"
-    __ui_icon__ = "image"
 
     planner_mode: Literal["text", "multimodal", "auto"] = Field(
         default="auto",
         json_schema_extra={
             "x-widget": "select",
             "x-icon": "git-branch",
+            "x-layout": "inline-right",
+            "x-input-width": "12rem",
             "x-option-descriptions": VISUAL_MODE_OPTION_DESCRIPTIONS,
             "x-row": "visual-modes",
         },
@@ -282,6 +281,8 @@ class VisualConfig(ConfigBase):
         json_schema_extra={
             "x-widget": "select",
             "x-icon": "git-branch",
+            "x-layout": "inline-right",
+            "x-input-width": "12rem",
             "x-option-descriptions": VISUAL_MODE_OPTION_DESCRIPTIONS,
             "x-row": "visual-modes",
         },
@@ -310,6 +311,8 @@ class VisualConfig(ConfigBase):
         json_schema_extra={
             "x-widget": "input",
             "x-icon": "timer",
+            "x-layout": "inline-right",
+            "x-input-width": "7.5rem",
             "label": {
                 "zh_CN": "识图最长等待时间",
                 "en_US": "Max image recognition wait time",
@@ -443,7 +446,6 @@ class ChatConfig(ConfigBase):
     """聊天配置类"""
 
     __ui_label__ = "聊天"
-    __ui_icon__ = "message-square"
 
     talk_value: float = Field(
         default=1,
@@ -522,7 +524,7 @@ class ChatConfig(ConfigBase):
             "x-widget": "input",
             "x-icon": "layers",
             "x-layout": "inline-right",
-            "x-input-width": "12rem",
+            "x-input-width": "6.5rem",
             "x-row": "context-sizes",
         },
     )
@@ -539,7 +541,7 @@ class ChatConfig(ConfigBase):
             "x-widget": "input",
             "x-icon": "layers",
             "x-layout": "inline-right",
-            "x-input-width": "12rem",
+            "x-input-width": "6.5rem",
             "x-row": "context-sizes",
         },
     )
@@ -587,7 +589,7 @@ class ChatConfig(ConfigBase):
             "x-widget": "input",
             "x-icon": "archive",
             "x-layout": "inline-right",
-            "x-input-width": "12rem",
+            "x-input-width": "6.5rem",
             "x-row": "context-sizes",
         },
     )
@@ -799,7 +801,21 @@ class ExperimentalConfig(ConfigBase):
     """实验性功能配置类"""
 
     __ui_label__ = "实验性功能"
-    __ui_icon__ = "flask-conical"
+    __ui_advanced__ = True
+
+    enable_behavior_learning: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "启用行为学习",
+                "en_US": "Enable behavior learning",
+                "ja_JP": "行動学習を有効化",
+            },
+            "x-widget": "switch",
+            "x-icon": "brain-circuit",
+        },
+    )
+    """是否启用行为学习；关闭后不再从裁切历史中抽取和写入行为经验。"""
 
     enable_replyer_format_output: bool = Field(
         default=False,
@@ -888,7 +904,7 @@ class MessageReceiveConfig(ConfigBase):
     """消息接收配置类"""
 
     __ui_label__ = "消息接收"
-    __ui_icon__ = "message-square-text"
+    __ui_advanced__ = True
 
     image_parse_threshold: int = Field(
         default=5,
@@ -1987,6 +2003,89 @@ class AMemorixThresholdConfig(ConfigBase):
     """是否启用自动阈值调整"""
 
 
+class AMemorixRetrievalSubtypeFilterConfig(ConfigBase):
+    """A_Memorix 检索结果分类型聊天过滤配置"""
+
+    enabled: bool = Field(
+        default=False,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "启用结果过滤",
+                "en_US": "Enable result filter",
+                "ja_JP": "結果フィルターを有効化",
+            },
+        },
+    )
+    """是否启用当前检索结果类型的聊天过滤"""
+
+    mode: Literal["blacklist", "whitelist"] = Field(
+        default="blacklist",
+        json_schema_extra={
+            "label": {
+                "zh_CN": "过滤模式",
+                "en_US": "Filter mode",
+                "ja_JP": "フィルターモード",
+            },
+        },
+    )
+    """过滤模式"""
+
+    chats: list[str] = Field(
+        default_factory=lambda: [],
+        json_schema_extra={
+            "label": {
+                "zh_CN": "聊天流列表",
+                "en_US": "Chat stream list",
+                "ja_JP": "チャットストリーム一覧",
+            },
+        },
+    )
+    """聊天流列表"""
+
+
+class AMemorixRetrievalFilterConfig(ConfigBase):
+    """A_Memorix 检索结果后置聊天过滤配置"""
+
+    chat_stream: AMemorixRetrievalSubtypeFilterConfig = Field(
+        default_factory=AMemorixRetrievalSubtypeFilterConfig,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "普通聊天流记忆",
+                "en_US": "Chat stream memory",
+                "ja_JP": "通常チャット記憶",
+            },
+            "x-collapsed-by-default": True,
+        },
+    )
+    """普通 paragraph/relation 命中的检索后置过滤"""
+
+    chat_summary: AMemorixRetrievalSubtypeFilterConfig = Field(
+        default_factory=AMemorixRetrievalSubtypeFilterConfig,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "聊天总结记忆",
+                "en_US": "Chat summary memory",
+                "ja_JP": "チャット要約記憶",
+            },
+            "x-collapsed-by-default": True,
+        },
+    )
+    """聊天总结命中的检索后置过滤"""
+
+    episode: AMemorixRetrievalSubtypeFilterConfig = Field(
+        default_factory=AMemorixRetrievalSubtypeFilterConfig,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "Episode 记忆",
+                "en_US": "Episode memory",
+                "ja_JP": "Episode 記憶",
+            },
+            "x-collapsed-by-default": True,
+        },
+    )
+    """Episode 命中的检索后置过滤"""
+
+
 class AMemorixFilterConfig(ConfigBase):
     """A_Memorix 聊天过滤配置"""
 
@@ -2025,6 +2124,19 @@ class AMemorixFilterConfig(ConfigBase):
         },
     )
     """聊天流列表"""
+
+    retrieval: AMemorixRetrievalFilterConfig = Field(
+        default_factory=AMemorixRetrievalFilterConfig,
+        json_schema_extra={
+            "label": {
+                "zh_CN": "检索结果过滤",
+                "en_US": "Retrieval result filter",
+                "ja_JP": "検索結果フィルター",
+            },
+            "x-collapsed-by-default": True,
+        },
+    )
+    """仅对检索结果生效的分类型聊天过滤，不影响写入和后台生成"""
 
 
 class AMemorixSharedMemoryGroupConfig(ConfigBase):
@@ -2682,8 +2794,7 @@ class AMemorixWebConfig(ConfigBase):
 class AMemorixConfig(ConfigBase):
     """长期记忆配置"""
 
-    __ui_label__ = "长期记忆"
-    __ui_icon__ = "brain"
+    __ui_label__ = "记忆"
 
     plugin: AMemorixPluginConfig = Field(
         default_factory=AMemorixPluginConfig,
@@ -2944,7 +3055,6 @@ class ExpressionConfig(ConfigBase):
     """表达配置类"""
 
     __ui_label__ = "学习"
-    __ui_icon__ = "pen-tool"
 
     expression_checked_only: bool = Field(
         default=True,
@@ -3024,7 +3134,6 @@ class ExpressionConfig(ConfigBase):
             "x-icon": "list",
         },
     )
-    """_wrap_表达学习配置列表，支持按聊天流配置"""
 
     expression_groups: list[ChatStreamGroup] = Field(
         default_factory=list,
@@ -3046,7 +3155,6 @@ class JargonConfig(ConfigBase):
 
     __ui_parent__ = "expression"
     __ui_label__ = "黑话"
-    __ui_icon__ = "book-open"
 
     learning_list: list[LearningItem] = Field(
         default_factory=lambda: [
@@ -3089,7 +3197,7 @@ class VoiceConfig(ConfigBase):
     """语音识别配置类"""
 
     __ui_label__ = "语音"
-    __ui_icon__ = "mic"
+    __ui_advanced__ = True
 
     enable_asr: bool = Field(
         default=False,
@@ -3105,7 +3213,7 @@ class EmojiConfig(ConfigBase):
     """表情包配置类"""
 
     __ui_label__ = "表情"
-    __ui_icon__ = "smile"
+    __ui_advanced__ = True
 
     emoji_send_num: int = Field(
         default=25,
@@ -3294,7 +3402,7 @@ class ResponsePostProcessConfig(ConfigBase):
     """回复后处理配置类"""
 
     __ui_label__ = "后处理"
-    __ui_icon__ = "settings"
+    __ui_advanced__ = True
 
     enable_response_post_process: bool = Field(
         default=True,
@@ -3427,7 +3535,7 @@ class LogConfig(ConfigBase):
     """日志配置类"""
 
     __ui_label__ = "调试"
-    __ui_icon__ = "file-text"
+    __ui_advanced__ = True
 
     date_style: str = Field(
         default="m-d H:i:s",
@@ -3590,7 +3698,6 @@ class DebugConfig(ConfigBase):
 
     __ui_parent__ = "log"
     __ui_label__ = "其他"
-    __ui_icon__ = "more-horizontal"
 
     show_maisaka_thinking: bool = Field(
         default=True,
@@ -3811,7 +3918,6 @@ class LPMMKnowledgeConfig(ConfigBase):
     """LPMM知识库配置类"""
 
     __ui_label__ = "知识库"
-    __ui_icon__ = "book-open"
 
     enable: bool = Field(
         default=True,
@@ -3981,7 +4087,7 @@ class WebUIConfig(ConfigBase):
     """WebUI配置类"""
 
     __ui_label__ = "WebUI"
-    __ui_icon__ = "layout"
+    __ui_advanced__ = True
 
     enabled: bool = Field(
         default=True,
@@ -4511,7 +4617,7 @@ class PluginConfig(ConfigBase):
     """插件管理配置类"""
 
     __ui_label__ = "插件"
-    __ui_icon__ = "shield"
+    __ui_advanced__ = True
 
     permission: list[str] = Field(
         default_factory=list,
@@ -4656,7 +4762,6 @@ class PluginRuntimeConfig(ConfigBase):
 
     __ui_parent__ = "plugin"
     __ui_label__ = "运行时"
-    __ui_icon__ = "puzzle"
 
     enabled: bool = Field(
         default=True,

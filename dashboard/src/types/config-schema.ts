@@ -20,6 +20,7 @@ export type XWidgetType =
   | 'select'
   | 'slider'
   | 'switch'
+  | 'tags'
   | 'talk-time'
   | 'textarea'
 
@@ -62,7 +63,7 @@ export interface ConfigSchema {
   nested?: Record<string, ConfigSchema>
   uiParent?: string
   uiLabel?: string
-  uiIcon?: string
+  uiAdvanced?: boolean
 }
 
 export interface ConfigSchemaResponse {

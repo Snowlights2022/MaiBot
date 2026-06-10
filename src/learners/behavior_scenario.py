@@ -14,49 +14,82 @@ logger = get_logger("behavior_scenario")
 
 ScenarioAgentRunner = Callable[[str], Awaitable[str]]
 
+_TAG_KIND_ALIASES = {
+    "attitude": "attitude",
+    "domain": "domain",
+    "need": "need",
+    "other_attitude": "attitude",
+    "other_traits": "attitude",
+}
+
+_ALLOWED_TAG_KINDS = {"attitude", "domain", "need"}
+
+
+@dataclass(frozen=True)
+class BehaviorScenarioTagCluster:
+    """LLM 学到的平等 tag 簇。命中任一成员时，检索按一个 tag 计分。"""
+
+    kind: str
+    tags: list[str] = field(default_factory=list)
+
+    def to_prompt_payload(self) -> dict[str, Any]:
+        values = self.all_values()
+        return {
+            "tag_name": values[0] if values else "",
+            "tag_aliases": values[1:],
+        }
+
+    def all_values(self) -> list[str]:
+        values: list[str] = []
+        for value in self.tags:
+            normalized_value = " ".join(str(value or "").split()).strip()
+            if normalized_value and normalized_value not in values:
+                values.append(normalized_value)
+        return values
+
 
 @dataclass(frozen=True)
 class BehaviorScenarioProfile:
     """行为表现选择前的场景画像。"""
 
     summary: str = ""
-    user_intent: str = ""
-    conversation_phase: str = ""
-    domain_tags: list[str] = field(default_factory=list)
-    behavior_needs: list[str] = field(default_factory=list)
-    risk_flags: list[str] = field(default_factory=list)
-    avoid_behaviors: list[str] = field(default_factory=list)
-    retrieval_query: str = ""
+    tag_clusters: list[BehaviorScenarioTagCluster] = field(default_factory=list)
     confidence: float = 0.0
 
     @property
     def has_signal(self) -> bool:
-        return any(
-            [
-                self.summary,
-                self.user_intent,
-                self.conversation_phase,
-                self.domain_tags,
-                self.behavior_needs,
-                self.risk_flags,
-                self.avoid_behaviors,
-                self.retrieval_query,
-            ]
-        )
+        return bool(self.tag_clusters)
 
-    def to_retrieval_text(self, context_text: str = "") -> str:
-        parts = [
-            self.summary,
-            self.user_intent,
-            self.conversation_phase,
-            " ".join(self.domain_tags),
-            " ".join(self.behavior_needs),
-            " ".join(self.risk_flags),
-            " ".join(self.avoid_behaviors),
-            self.retrieval_query,
-            context_text,
+    def tag_cluster_text(self) -> str:
+        cluster_texts: list[str] = []
+        for cluster in self.tag_clusters:
+            if _normalize_tag_kind(cluster.kind) not in _ALLOWED_TAG_KINDS:
+                continue
+            values = cluster.all_values()
+            if not values:
+                continue
+            cluster_texts.append(f"{cluster.kind}:{'/'.join(values)}")
+        return " ".join(cluster_texts)
+
+    def domain_prompt_payloads(self) -> list[dict[str, Any]]:
+        return [
+            cluster.to_prompt_payload()
+            for cluster in self.tag_clusters
+            if _normalize_tag_kind(cluster.kind) == "domain" and cluster.all_values()
         ]
-        return "\n".join(part for part in parts if str(part or "").strip())
+
+    def need_prompt_payload(self) -> dict[str, Any]:
+        for cluster in self.tag_clusters:
+            if _normalize_tag_kind(cluster.kind) == "need" and cluster.all_values():
+                return cluster.to_prompt_payload()
+        return {"tag_name": "", "tag_aliases": []}
+
+    def other_traits_prompt_payloads(self) -> list[dict[str, Any]]:
+        return [
+            cluster.to_prompt_payload()
+            for cluster in self.tag_clusters
+            if _normalize_tag_kind(cluster.kind) == "attitude" and cluster.all_values()
+        ]
 
     def to_prompt_text(self) -> str:
         if not self.has_signal:
@@ -64,38 +97,42 @@ class BehaviorScenarioProfile:
         return json.dumps(
             {
                 "summary": self.summary,
-                "user_intent": self.user_intent,
-                "conversation_phase": self.conversation_phase,
-                "domain_tags": self.domain_tags,
-                "behavior_needs": self.behavior_needs,
-                "risk_flags": self.risk_flags,
-                "avoid_behaviors": self.avoid_behaviors,
-                "retrieval_query": self.retrieval_query,
+                "tag_clusters": self.domain_prompt_payloads(),
+                "need": self.need_prompt_payload(),
+                "other_traits": self.other_traits_prompt_payloads(),
                 "confidence": self.confidence,
             },
             ensure_ascii=False,
             indent=2,
         )
 
-    def to_learning_start_text(self, *, max_length: int = 150) -> str:
-        """将场景画像压缩成可写入行为模式 trigger 的统一 start。"""
 
-        if not self.has_signal:
-            return ""
+@dataclass(frozen=True)
+class BehaviorScenarioSegment:
+    """一次行为学习窗口中可独立学习的场景片段。"""
 
-        parts = [
-            self.summary,
-            self.user_intent,
-            self.conversation_phase,
-            "、".join(self.domain_tags[:3]),
-            "、".join(self.behavior_needs[:3]),
-        ]
-        scene_start = "；".join(part for part in parts if str(part or "").strip()).strip()
-        if not scene_start:
-            scene_start = self.retrieval_query.strip()
-        if len(scene_start) <= max_length:
-            return scene_start
-        return scene_start[:max_length].rstrip()
+    segment_id: str
+    title: str
+    source_ids: list[str] = field(default_factory=list)
+    profile: BehaviorScenarioProfile = field(default_factory=BehaviorScenarioProfile)
+
+    @property
+    def has_signal(self) -> bool:
+        return bool(self.segment_id and self.profile.has_signal)
+
+    def to_prompt_payload(self) -> dict[str, Any]:
+        return {
+            "segment_id": self.segment_id,
+            "title": self.title,
+            "source_ids": self.source_ids,
+            "profile": {
+                "summary": self.profile.summary,
+                "tag_clusters": self.profile.domain_prompt_payloads(),
+                "need": self.profile.need_prompt_payload(),
+                "other_traits": self.profile.other_traits_prompt_payloads(),
+                "confidence": self.profile.confidence,
+            },
+        }
 
 
 def _strip_json_code_fence(raw_response: str) -> str:
@@ -136,6 +173,92 @@ def _coerce_float(raw_value: Any) -> float:
     return max(0.0, min(1.0, value))
 
 
+def _coerce_segment_id(raw_value: Any, *, fallback_index: int) -> str:
+    segment_id = " ".join(str(raw_value or "").split()).strip()
+    if segment_id:
+        return segment_id[:40]
+    return f"s{fallback_index}"
+
+
+def _coerce_source_ids(raw_value: Any, *, max_items: int = 24) -> list[str]:
+    raw_items = raw_value if isinstance(raw_value, list) else [raw_value]
+    source_ids: list[str] = []
+    for raw_item in raw_items:
+        if isinstance(raw_item, str) and "," in raw_item:
+            split_items = raw_item.split(",")
+        else:
+            split_items = [raw_item]
+        for split_item in split_items:
+            source_id = str(split_item or "").strip()
+            if source_id and source_id not in source_ids:
+                source_ids.append(source_id)
+                if len(source_ids) >= max_items:
+                    return source_ids
+    return source_ids
+
+
+def _normalize_tag_kind(raw_value: Any) -> str:
+    normalized_kind = " ".join(str(raw_value or "").lower().split()).strip()
+    return _TAG_KIND_ALIASES.get(normalized_kind, normalized_kind)
+
+
+def _coerce_tag_cluster_items(
+    raw_value: Any,
+    *,
+    kind: str,
+    max_items: int = 16,
+) -> list[BehaviorScenarioTagCluster]:
+    if isinstance(raw_value, list):
+        raw_items = raw_value
+    else:
+        return []
+
+    clusters: list[BehaviorScenarioTagCluster] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        if "kind" in raw_item:
+            continue
+        tag_name = " ".join(str(raw_item.get("tag_name") or "").split()).strip()
+        raw_aliases = raw_item.get("tag_aliases")
+        tags = _coerce_string_list([tag_name, *_coerce_string_list(raw_aliases, max_items=8)], max_items=8)
+        if not tags:
+            continue
+
+        clusters.append(BehaviorScenarioTagCluster(kind=kind, tags=tags))
+        if len(clusters) >= max_items:
+            break
+    return clusters
+
+
+def _coerce_need_tag_cluster(raw_value: Any) -> BehaviorScenarioTagCluster | None:
+    if isinstance(raw_value, dict):
+        if "kind" in raw_value:
+            return None
+        tag_name = " ".join(str(raw_value.get("tag_name") or "").split()).strip()
+        raw_aliases = raw_value.get("tag_aliases")
+        tags = _coerce_string_list([tag_name, *_coerce_string_list(raw_aliases, max_items=8)], max_items=8)
+    else:
+        tags = _coerce_string_list(raw_value, max_items=1)
+    if not tags:
+        return None
+    return BehaviorScenarioTagCluster(kind="need", tags=tags)
+
+
+def _profile_from_mapping(parsed_response: dict[str, Any]) -> BehaviorScenarioProfile:
+    tag_clusters = _coerce_tag_cluster_items(parsed_response.get("tag_clusters"), kind="domain")
+    tag_clusters.extend(_coerce_tag_cluster_items(parsed_response.get("other_traits"), kind="attitude", max_items=8))
+    need_cluster = _coerce_need_tag_cluster(parsed_response.get("need"))
+    if need_cluster is not None:
+        tag_clusters.append(need_cluster)
+
+    return BehaviorScenarioProfile(
+        summary=" ".join(str(parsed_response.get("summary") or "").split()).strip(),
+        tag_clusters=tag_clusters,
+        confidence=_coerce_float(parsed_response.get("confidence")),
+    )
+
+
 def parse_behavior_scenario_response(response: str) -> BehaviorScenarioProfile:
     """解析场景分析模型返回的 JSON。"""
 
@@ -152,17 +275,68 @@ def parse_behavior_scenario_response(response: str) -> BehaviorScenarioProfile:
     if not isinstance(parsed_response, dict):
         return BehaviorScenarioProfile()
 
-    return BehaviorScenarioProfile(
-        summary=" ".join(str(parsed_response.get("summary") or "").split()).strip(),
-        user_intent=" ".join(str(parsed_response.get("user_intent") or "").split()).strip(),
-        conversation_phase=" ".join(str(parsed_response.get("conversation_phase") or "").split()).strip(),
-        domain_tags=_coerce_string_list(parsed_response.get("domain_tags")),
-        behavior_needs=_coerce_string_list(parsed_response.get("behavior_needs")),
-        risk_flags=_coerce_string_list(parsed_response.get("risk_flags")),
-        avoid_behaviors=_coerce_string_list(parsed_response.get("avoid_behaviors")),
-        retrieval_query=" ".join(str(parsed_response.get("retrieval_query") or "").split()).strip(),
-        confidence=_coerce_float(parsed_response.get("confidence")),
-    )
+    if isinstance(parsed_response.get("segments"), list):
+        segments = parse_behavior_scenario_segments_response(response)
+        return segments[0].profile if segments else BehaviorScenarioProfile()
+
+    return _profile_from_mapping(parsed_response)
+
+
+def parse_behavior_scenario_segments_response(response: str) -> list[BehaviorScenarioSegment]:
+    """解析场景分析模型返回的多场景片段。"""
+
+    normalized_response = _strip_json_code_fence(response or "")
+    if not normalized_response:
+        return []
+
+    try:
+        parsed_response = json.loads(repair_json(normalized_response))
+    except Exception:
+        logger.warning(f"行为表现多场景片段解析失败: {normalized_response!r}")
+        return []
+
+    if isinstance(parsed_response, dict) and isinstance(parsed_response.get("segments"), list):
+        raw_segments = parsed_response.get("segments") or []
+    elif isinstance(parsed_response, list):
+        raw_segments = parsed_response
+    elif isinstance(parsed_response, dict):
+        raw_segments = [
+            {
+                "segment_id": "s1",
+                "title": parsed_response.get("summary") or "主场景",
+                "source_ids": parsed_response.get("source_ids") or [],
+                "profile": parsed_response,
+            }
+        ]
+    else:
+        return []
+
+    segments: list[BehaviorScenarioSegment] = []
+    seen_ids: set[str] = set()
+    for index, raw_segment in enumerate(raw_segments[:3], start=1):
+        if not isinstance(raw_segment, dict):
+            continue
+        raw_profile = raw_segment.get("profile")
+        if not isinstance(raw_profile, dict):
+            raw_profile = raw_segment
+        profile = _profile_from_mapping(raw_profile)
+        if not profile.has_signal:
+            continue
+        segment_id = _coerce_segment_id(raw_segment.get("segment_id") or raw_segment.get("id"), fallback_index=index)
+        if segment_id in seen_ids:
+            segment_id = f"{segment_id}_{index}"
+        seen_ids.add(segment_id)
+        title = " ".join(str(raw_segment.get("title") or profile.summary or segment_id).split()).strip()
+        segments.append(
+            BehaviorScenarioSegment(
+                segment_id=segment_id,
+                title=title[:120],
+                source_ids=_coerce_source_ids(raw_segment.get("source_ids")),
+                profile=profile,
+            )
+        )
+
+    return segments
 
 
 class BehaviorScenarioAnalyzer:
@@ -173,6 +347,7 @@ class BehaviorScenarioAnalyzer:
         *,
         context_text: str,
         sub_agent_runner: Optional[ScenarioAgentRunner],
+        include_context_in_prompt: bool = True,
     ) -> BehaviorScenarioProfile:
         if sub_agent_runner is None:
             return BehaviorScenarioProfile()
@@ -183,7 +358,6 @@ class BehaviorScenarioAnalyzer:
         prompt = load_prompt(
             "behavior_scene_analyze",
             bot_name=global_config.bot.nickname,
-            context_text=normalized_context,
         )
         try:
             raw_response = await sub_agent_runner(prompt)
@@ -191,6 +365,32 @@ class BehaviorScenarioAnalyzer:
             logger.debug(f"行为表现情景画像子代理失败，已退回本地检索: {exc}")
             return BehaviorScenarioProfile()
         return parse_behavior_scenario_response(raw_response)
+
+    async def analyze_segments(
+        self,
+        *,
+        context_text: str,
+        sub_agent_runner: Optional[ScenarioAgentRunner],
+    ) -> list[BehaviorScenarioSegment]:
+        """将一次学习窗口拆成 1~3 个可独立学习的场景片段。"""
+
+        if sub_agent_runner is None:
+            return []
+        normalized_context = str(context_text or "").strip()
+        if not normalized_context:
+            return []
+
+        prompt = load_prompt(
+            "behavior_scene_analyze",
+            bot_name=global_config.bot.nickname,
+            context_text=normalized_context,
+        )
+        try:
+            raw_response = await sub_agent_runner(prompt)
+        except Exception as exc:
+            logger.debug(f"行为表现多场景片段分析失败，跳过本轮场景切分: {exc}")
+            return []
+        return parse_behavior_scenario_segments_response(raw_response)
 
 
 behavior_scenario_analyzer = BehaviorScenarioAnalyzer()

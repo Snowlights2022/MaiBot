@@ -16,6 +16,7 @@ from src.common.data_models.image_data_model import MaiEmoji
 from src.common.database.database import get_db_session, get_db_session_manual
 from src.common.database.database_model import Images, ImageType
 from src.common.logger import get_logger
+from src.common.utils.image_path import resolve_stored_image_path, serialize_stored_image_path
 from src.common.utils.utils_image import ImageUtils
 from src.config.config import config_manager, global_config
 from src.plugin_runtime.hook_schema_utils import build_object_schema
@@ -210,8 +211,13 @@ def _is_available_emoji_record(record: Images) -> bool:
     if record.no_file_flag:
         return False
 
-    record_path = Path(record.full_path)
+    record_path = resolve_stored_image_path(record.full_path)
     return record_path.exists() and record_path.is_file()
+
+
+def _is_known_emoji_maintenance_record(record: Images) -> bool:
+    """判断维护扫描是否应把数据库记录对应文件视为已处理。"""
+    return record.is_registered or record.is_banned or record.vlm_processed
 
 
 def _resolve_existing_emoji_path(raw_path: str | Path | None) -> Optional[Path]:
@@ -219,7 +225,7 @@ def _resolve_existing_emoji_path(raw_path: str | Path | None) -> Optional[Path]:
     if not raw_path:
         return None
 
-    record_path = Path(raw_path).absolute().resolve()
+    record_path = resolve_stored_image_path(raw_path)
     if not record_path.exists() or not record_path.is_file():
         return None
     return record_path
@@ -321,7 +327,7 @@ class EmojiManager:
             emoji_hash = hashlib.sha256(emoji_bytes).hexdigest()
 
         if emoji := self.get_emoji_by_hash(emoji_hash):
-            emoji_path = Path(emoji.full_path) if emoji.full_path else None
+            emoji_path = resolve_stored_image_path(emoji.full_path) if emoji.full_path else None
             if emoji_bytes and (emoji_path is None or not emoji_path.exists()):
                 try:
                     restored_emoji = await self.ensure_emoji_saved(emoji_bytes, emoji_hash=emoji_hash)
@@ -334,11 +340,11 @@ class EmojiManager:
             with get_db_session() as session:
                 statement = select(Images).filter_by(image_hash=emoji_hash, image_type=ImageType.EMOJI).limit(1)
                 if result := session.exec(statement).first():
-                    record_path = Path(result.full_path) if result.full_path else None
+                    record_path = resolve_stored_image_path(result.full_path) if result.full_path else None
                     if emoji_bytes and (result.no_file_flag or record_path is None or not record_path.exists()):
                         try:
                             restored_emoji = await self.ensure_emoji_saved(emoji_bytes, emoji_hash=emoji_hash)
-                            result.full_path = str(restored_emoji.full_path)
+                            result.full_path = serialize_stored_image_path(restored_emoji.full_path)
                             result.no_file_flag = False
                         except Exception as e:
                             logger.warning(f"数据库命中表情包记录但本地文件缺失，回填失败: {e}")
@@ -389,7 +395,7 @@ class EmojiManager:
             with get_db_session() as session:
                 statement = select(Images).filter_by(image_hash=hash_str, image_type=ImageType.EMOJI).limit(1)
                 if record := session.exec(statement).first():
-                    record_path = Path(record.full_path)
+                    record_path = resolve_stored_image_path(record.full_path)
                     if not record.no_file_flag and record_path.exists():
                         return MaiEmoji.from_db_instance(record)
         except Exception as e:
@@ -408,7 +414,7 @@ class EmojiManager:
             with get_db_session() as session:
                 statement = select(Images).filter_by(image_hash=emoji.file_hash, image_type=ImageType.EMOJI).limit(1)
                 if existing_record := session.exec(statement).first():
-                    existing_record.full_path = str(emoji.full_path)
+                    existing_record.full_path = serialize_stored_image_path(emoji.full_path)
                     existing_record.no_file_flag = False
                     session.add(existing_record)
                 else:
@@ -488,7 +494,7 @@ class EmojiManager:
             try:
                 statement = select(Images).filter_by(image_hash=new_emoji.file_hash, image_type=ImageType.EMOJI).limit(1)
                 if image_record := session.exec(statement).first():
-                    image_record.full_path = str(new_emoji.full_path)
+                    image_record.full_path = serialize_stored_image_path(new_emoji.full_path)
                     image_record.description = new_emoji.description
                     image_record.no_file_flag = False
                     session.add(image_record)
@@ -573,7 +579,7 @@ class EmojiManager:
                     normalized_emotions = _normalize_emoji_tag_text(normalized_description)
                     register_time = existing_record.register_time or datetime.now()
 
-                    existing_record.full_path = str(emoji.full_path)
+                    existing_record.full_path = serialize_stored_image_path(emoji.full_path)
                     existing_record.description = normalized_description
                     existing_record.query_count = max(int(existing_record.query_count), int(emoji.query_count))
                     existing_record.last_used_time = emoji.last_used_time or existing_record.last_used_time
@@ -1054,6 +1060,35 @@ class EmojiManager:
         logger.info(f"[构建描述] 成功为表情包构建情绪标签: {target_emoji.description}")
         return True, target_emoji
 
+    def _mark_emoji_vlm_processed(self, target_emoji: MaiEmoji) -> None:
+        """记录表情包已经过 VLM 处理，避免自动维护任务反复消耗识别额度。"""
+        if not target_emoji.file_hash:
+            return
+
+        try:
+            with get_db_session() as session:
+                statement = select(Images).filter_by(
+                    image_hash=target_emoji.file_hash,
+                    image_type=ImageType.EMOJI,
+                ).limit(1)
+                image_record = session.exec(statement).first()
+                if image_record is None:
+                    image_record = target_emoji.to_db_instance()
+                    image_record.is_registered = False
+                    image_record.is_banned = False
+                    image_record.query_count = 0
+                    image_record.register_time = None
+                    image_record.last_used_time = None
+
+                image_record.full_path = serialize_stored_image_path(target_emoji.full_path)
+                if target_emoji.description:
+                    image_record.description = target_emoji.description
+                image_record.no_file_flag = False
+                image_record.vlm_processed = True
+                session.add(image_record)
+        except Exception as exc:
+            logger.error(f"[register_emoji] 标记表情包 VLM 处理状态失败: {exc}")
+
     def check_emoji_file_integrity(self) -> None:
         """
         检查表情包文件和数据库注册记录的一致性。
@@ -1120,7 +1155,7 @@ class EmojiManager:
                 with get_db_session() as session:
                     statement = select(Images).filter_by(image_type=ImageType.EMOJI)
                     for record in session.exec(statement).all():
-                        if not record.is_registered and not record.is_banned:
+                        if not _is_known_emoji_maintenance_record(record):
                             continue
                         if record_path := _resolve_existing_emoji_path(record.full_path):
                             known_paths.add(record_path)
@@ -1207,11 +1242,13 @@ class EmojiManager:
 
         if not target_emoji.description:
             desc_success, target_emoji = await self.build_emoji_description(target_emoji)
+            self._mark_emoji_vlm_processed(target_emoji)
             if not desc_success:
                 logger.error(f"[register_emoji] Failed to build emoji description: {file_full_path}")
                 return "failed"
 
         if not await self.review_emoji_for_registration(target_emoji):
+            self._mark_emoji_vlm_processed(target_emoji)
             logger.error(f"[register_emoji] Emoji did not pass content review: {file_full_path}")
             return "failed"
 

@@ -38,6 +38,7 @@ export interface ChatConfig {
 }
 
 export interface ExperimentalConfig {
+  enable_behavior_learning: boolean
   enable_replyer_format_output: boolean
   focus_mode: boolean
   focus_cool_time: number
@@ -46,8 +47,8 @@ export interface ExperimentalConfig {
 export interface TargetItem {
   platform: string
   item_id: string
-  type?: 'group' | 'private'
   rule_type?: 'group' | 'private'
+  type?: 'group' | 'private'
 }
 
 export interface LearningItem {
@@ -64,7 +65,8 @@ export interface LearningItem {
 
 export interface ChatStreamGroup {
   targets?: TargetItem[]
-  expression_groups: TargetItem[]
+  expression_groups?: TargetItem[]
+  jargon_groups?: TargetItem[]
 }
 
 export type ExpressionGroup = ChatStreamGroup
