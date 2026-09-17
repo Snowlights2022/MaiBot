@@ -1,0 +1,53 @@
+#!/bin/sh
+# ============================================================================
+# maibot-deploy — 开发容器内 Docker Compose 部署选择器
+# ============================================================================
+# 用法：
+#   maibot-deploy production up -d     部署到稳定（生产）实例
+#   maibot-deploy develop   up -d     部署到测试（开发）实例
+#   maibot-deploy production logs -f   查看生产实例日志
+#   maibot-deploy develop   ps        查看测试实例状态
+#
+# 两个实例可同时运行、独立启停，互不影响（项目名/容器名/端口/数据目录全部隔离）。
+#
+# 生产实例使用 docker-compose.yml + docker-compose.dood-pathfix.yml（仅路径修正）
+# 测试实例使用 docker-compose.yml + docker-compose.devcontainer.yml（路径修正 + 完整隔离）
+# ============================================================================
+
+set -eu
+
+TARGET="${1:-}"
+if [ $# -eq 0 ] || [ "$TARGET" = "-h" ] || [ "$TARGET" = "--help" ]; then
+    echo "用法: maibot-deploy <production|develop> <docker compose 参数...>"
+    echo ""
+    echo "  production  — 部署到稳定（生产）实例（端口 18001/6099/8120）"
+    echo "  develop     — 部署到测试（开发）实例（端口 18002/16100/18121）"
+    echo ""
+    echo "两个实例可同时运行，独立启停，互不影响。"
+    exit 0
+fi
+
+shift
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKSPACE_FOLDER="$(dirname "$SCRIPT_DIR")"
+
+case "$TARGET" in
+  production)
+    export COMPOSE_FILE="docker-compose.yml:docker-compose.dood-pathfix.yml"
+    export COMPOSE_PROJECT_NAME="maibot"
+    echo "[maibot-deploy] 目标: 生产实例 (${COMPOSE_PROJECT_NAME})"
+    ;;
+  develop)
+    export COMPOSE_FILE="docker-compose.yml:docker-compose.devcontainer.yml"
+    export COMPOSE_PROJECT_NAME="maibot-dev"
+    echo "[maibot-deploy] 目标: 测试实例 (${COMPOSE_PROJECT_NAME})"
+    ;;
+  *)
+    echo "错误: 未知目标 '${TARGET}'，请使用 production 或 develop"
+    exit 1
+    ;;
+esac
+
+cd "$WORKSPACE_FOLDER"
+exec docker compose "$@"

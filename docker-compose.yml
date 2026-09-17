@@ -2,7 +2,7 @@ services:
   core:
     container_name: maim-bot-core
     #### prod ####
-    image: sengokucola/maibot:latest
+    image: sengokucola/maibot:dev
     # image: infinitycat/maibot:latest
     #### dev ####
     # image: sengokucola/maibot:dev
