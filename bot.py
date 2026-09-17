@@ -8,6 +8,7 @@ import hashlib
 import os
 import platform
 # import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -16,6 +17,8 @@ import traceback
 from src.common.i18n import set_locale, t, tn
 from src.common.logger import get_logger, initialize_logging, shutdown_logging
 from src.common.runtime_loop import set_main_loop
+from src.common.shutdown import request_shutdown
+from src.common.update_notice import emit_terminal_update_notice_if_needed
 from src.config.legacy_upgrade_confirmation import require_legacy_upgrade_confirmation
 
 # 设置工作目录为脚本所在目录
@@ -32,6 +35,9 @@ logger = get_logger("main")
 
 # 定义重启退出码
 RESTART_EXIT_CODE = 42
+_active_main_loop: asyncio.AbstractEventLoop | None = None
+_active_main_task: asyncio.Task[None] | None = None
+_shutdown_signal_count: int = 0
 _RunResultT = TypeVar("_RunResultT")
 # print("-----------------------------------------")
 # print("\n\n\n\n\n")
@@ -44,6 +50,30 @@ def _print_interrupt_exit_notice() -> None:
     """在日志系统不可用或正在退出时，用最小输出提示 Ctrl+C 退出。"""
 
     print("\n收到 Ctrl+C，中断退出。")
+
+
+def _mark_shutdown_and_interrupt(_signum: int, _frame: object) -> None:
+    """收到中断信号时标记关停，并请求主任务取消。"""
+
+    global _shutdown_signal_count
+    _shutdown_signal_count += 1
+    request_shutdown("signal")
+    main_loop = _active_main_loop
+    if main_loop is None or main_loop.is_closed():
+        return
+
+    try:
+        main_loop.call_soon_threadsafe(_cancel_active_main_task_from_signal)
+    except RuntimeError:
+        return
+
+
+def _cancel_active_main_task_from_signal() -> None:
+    """在事件循环线程中取消当前主任务。"""
+
+    if _active_main_task is None or _active_main_task.done():
+        return
+    _active_main_task.cancel()
 
 
 def run_runner_process():
@@ -60,7 +90,6 @@ def run_runner_process():
 
     while True:
         logger.info(t("startup.launching_script", script_file=script_file))
-        logger.info(t("startup.compiling_shaders"))
 
         # 启动子进程 (Worker)
         # 使用 sys.executable 确保使用相同的 Python 解释器
@@ -113,6 +142,7 @@ if os.environ.get("MAIBOT_WORKER_PROCESS") != "1":
 # 不过由于是不同进程，每个进程仍会初始化一次，这是预期的行为
 
 require_legacy_upgrade_confirmation(Path(script_dir))
+asyncio.run(emit_terminal_update_notice_if_needed())
 
 logger.info(t("startup.worker_dir_set", script_dir=script_dir))
 
@@ -180,6 +210,7 @@ def easter_egg():
 
 async def graceful_shutdown(main_system: MainSystem | None = None):  # sourcery skip: use-named-expression
     try:
+        request_shutdown("graceful_shutdown")
         logger.info(t("startup.shutdown_started"))
 
         # 关闭 WebUI 服务器
@@ -193,15 +224,32 @@ async def graceful_shutdown(main_system: MainSystem | None = None):  # sourcery 
         from src.core.types import EventType
 
         # 触发 ON_STOP 事件
-        await event_bus.emit(event_type=EventType.ON_STOP)
+        await _await_shutdown_step(
+            event_bus.emit(event_type=EventType.ON_STOP),
+            timeout=5.0,
+            step_name="触发 ON_STOP 事件",
+        )
 
         # 停止新版本插件运行时
         from src.plugin_runtime.integration import get_plugin_runtime_manager
 
-        await get_plugin_runtime_manager().stop()
+        await _await_shutdown_step(
+            get_plugin_runtime_manager().stop(),
+            timeout=8.0,
+            step_name="停止插件运行时",
+        )
+
+        # 先等待图片描述写回，再关闭记忆内核，避免未完成同步被统一取消。
+        from src.chat.image_system.image_manager import image_manager
+
+        await _await_shutdown_step(image_manager.shutdown(), timeout=120.0, step_name="等待图片描述同步")
 
         # 停止所有异步任务
-        await async_task_manager.stop_and_wait_all_tasks()
+        await _await_shutdown_step(
+            async_task_manager.stop_and_wait_all_tasks(),
+            timeout=5.0,
+            step_name="停止异步任务管理器任务",
+        )
 
         # 获取所有剩余任务，排除当前任务
         remaining_tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
@@ -216,7 +264,7 @@ async def graceful_shutdown(main_system: MainSystem | None = None):  # sourcery 
 
             # 等待所有任务完成，设置超时
             try:
-                await asyncio.wait_for(asyncio.gather(*remaining_tasks, return_exceptions=True), timeout=15.0)
+                await asyncio.wait_for(asyncio.gather(*remaining_tasks, return_exceptions=True), timeout=5.0)
                 logger.info(t("startup.remaining_tasks_cancelled"))
             except asyncio.TimeoutError:
                 logger.warning(t("startup.remaining_tasks_cancel_timeout"))
@@ -227,6 +275,21 @@ async def graceful_shutdown(main_system: MainSystem | None = None):  # sourcery 
 
     except Exception as e:
         logger.error(t("startup.shutdown_failed", error=e), exc_info=True)
+
+
+async def _await_shutdown_step(awaitable, *, timeout: float, step_name: str):
+    """为关停步骤设置硬超时，避免单个组件阻塞 Ctrl+C 退出。"""
+
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(f"{step_name} 超时，继续执行后续关停步骤")
+        return None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(f"{step_name} 失败，继续执行后续关停步骤: {exc}", exc_info=True)
+        return None
 
 
 def _cancel_main_task(main_loop: asyncio.AbstractEventLoop | None, main_task: asyncio.Task[None] | None) -> None:
@@ -410,6 +473,8 @@ if __name__ == "__main__":
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         set_main_loop(loop)
+        _active_main_loop = loop
+        signal.signal(signal.SIGINT, _mark_shutdown_and_interrupt)
 
         # 初始化 WebSocket 日志推送
         from src.common.logger import initialize_ws_handler
@@ -419,13 +484,14 @@ if __name__ == "__main__":
         try:
             # 执行初始化和任务调度
             initialize_task = loop.create_task(main_system.initialize())
+            _active_main_task = initialize_task
             _run_until_complete(loop, initialize_task)
-            # Schedule tasks returns a future that runs forever.
-            # We can run console_input_loop concurrently.
             main_tasks = loop.create_task(main_system.schedule_tasks())
+            _active_main_task = main_tasks
             _run_until_complete(loop, main_tasks)
 
         except KeyboardInterrupt:
+            request_shutdown("keyboard_interrupt")
             try:
                 logger.warning(t("startup.interrupt_received"))
             except KeyboardInterrupt:
@@ -435,6 +501,14 @@ if __name__ == "__main__":
             _cancel_main_task(loop, main_tasks)
 
             # 执行优雅关闭
+            shutdown_completed = _run_graceful_shutdown(loop, main_system)
+        except asyncio.CancelledError:
+            request_shutdown("task_cancelled")
+            try:
+                logger.warning(t("startup.interrupt_received"))
+            except KeyboardInterrupt:
+                pass
+
             shutdown_completed = _run_graceful_shutdown(loop, main_system)
         # 新增：检测外部请求关闭
 
@@ -448,6 +522,7 @@ if __name__ == "__main__":
             logger.info(t("startup.restart_signal_received"))
 
     except KeyboardInterrupt:
+        request_shutdown("keyboard_interrupt")
         _print_interrupt_exit_notice()
     except Exception as e:
         try:
@@ -462,6 +537,8 @@ if __name__ == "__main__":
         try:
             # 确保 loop 在任何情况下都尝试关闭（如果存在且未关闭）
             if "loop" in locals() and loop and not loop.is_closed():
+                _active_main_task = None
+                _active_main_loop = None
                 set_main_loop(None)
                 loop.close()
                 print(t("startup.event_loop_closed"))

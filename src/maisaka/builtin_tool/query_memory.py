@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
+import re
 
 from src.common.logger import get_logger
 from src.config.config import global_config
 from src.core.tooling import ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
+from src.maisaka.utils.tool_post_execution import with_memory_feedback_task
 from src.person_info.person_info import resolve_person_id_for_memory
 from src.services.memory_service import MemorySearchResult, memory_service
 
@@ -15,6 +17,7 @@ from .context import BuiltinToolRuntimeContext
 logger = get_logger("maisaka_builtin_query_memory")
 
 _ALLOWED_QUERY_MODES = {"search", "time", "hybrid", "episode", "aggregate"}
+_ISO_QUERY_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?$")
 REPLYER_MEMORY_REFERENCE_MARKER = "【长期记忆检索结果-内部参考】"
 
 
@@ -23,39 +26,43 @@ def get_tool_spec(*, enabled: bool = True) -> ToolSpec:
 
     return ToolSpec(
         name="query_memory",
-        description="检索长期记忆并返回可读结果。",
+        description="检索长期记忆。",
         parameters_schema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "要检索的关键词或问题。",
+                    "description": "关键词或问题；非纯时间检索必填。",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "返回条数，默认使用系统配置值。",
+                    "description": "返回条数。",
                 },
                 "mode": {
                     "type": "string",
-                    "description": "检索模式：search/time/hybrid/episode/aggregate。`search` 查事实或偏好，`time` 查某段时间，`episode` 查某次经历，`aggregate` 查整体情况；拿不准时用 `hybrid`。",
+                    "description": (
+                        "检索路由：search按语义检索事实、偏好等记忆；time按时间范围检索；"
+                        "episode检索经历；aggregate综合检索；hybrid同时使用语义与时间范围。"
+                        "time和hybrid至少提供time_start或time_end；没有时间条件时使用search。"
+                    ),
                     "enum": sorted(_ALLOWED_QUERY_MODES),
                     "default": "search",
                 },
                 "person_name": {
                     "type": "string",
-                    "description": "人物名称，可选。提供后优先按人物过滤。",
+                    "description": "人物名；用于定向过滤。",
                 },
                 "time_start": {
                     "type": "string",
-                    "description": "起始时间，可填写时间戳或可解析时间文本。",
+                    "description": "起始时间，仅接受YYYY/MM/DD或YYYY/MM/DD HH:mm。",
                 },
                 "time_end": {
                     "type": "string",
-                    "description": "结束时间，可填写时间戳或可解析时间文本。",
+                    "description": "结束时间，仅接受YYYY/MM/DD或YYYY/MM/DD HH:mm。",
                 },
                 "respect_filter": {
                     "type": "boolean",
-                    "description": "是否应用聊天过滤配置。",
+                    "description": "是否遵守记忆过滤规则；默认true，模糊来源或整体印象可false。",
                     "default": True,
                 },
             },
@@ -75,6 +82,8 @@ def _normalize_optional_time(raw_value: Any) -> str | float | None:
         time_text = raw_value.strip()
         if not time_text:
             return None
+        if _ISO_QUERY_TIME_RE.fullmatch(time_text):
+            return time_text.replace("-", "/", 2)
         return time_text
     if isinstance(raw_value, (float, int)):
         return float(raw_value)
@@ -251,13 +260,7 @@ async def handle_tool(
     primary_hit_count = len(result.hits)
 
     # 方案2：人物过滤未命中时，降级到关键词检索，避免直接“空结果”。
-    if (
-        result.success
-        and person_id
-        and not result.filtered
-        and not result.hits
-        and clean_query
-    ):
+    if result.success and person_id and not result.filtered and not result.hits and clean_query:
         fallback_applied = True
         fallback_reason = "person_filter_miss"
         fallback_query = clean_query
@@ -282,10 +285,7 @@ async def handle_tool(
             if fallback_result.success:
                 result = fallback_result
             else:
-                logger.warning(
-                    f"{runtime.log_prefix} 关键词降级检索失败，回退原结果: "
-                    f"error={fallback_result.error}"
-                )
+                logger.warning(f"{runtime.log_prefix} 关键词降级检索失败，回退原结果: error={fallback_result.error}")
         except Exception as exc:
             logger.warning(f"{runtime.log_prefix} 关键词降级检索异常，回退原结果: {exc}")
 
@@ -321,16 +321,8 @@ async def handle_tool(
 
     content = _build_success_content(result, limit=limit)
     if fallback_applied:
-        content = (
-            "提示：人物定向检索未命中，已自动降级为关键词检索。\n"
-            f"{content}"
-        )
-    if clean_query:
-        display_prompt = f"你查询了长期记忆：{clean_query}"
-    else:
-        display_prompt = "你按时间范围查询了长期记忆。"
-
-    metadata: Dict[str, Any] = {"record_display_prompt": display_prompt}
+        content = f"提示：人物定向检索未命中，已自动降级为关键词检索。\n{content}"
+    metadata: Dict[str, Any] = with_memory_feedback_task()
     replyer_memory_reference = _build_replyer_memory_reference(structured_content)
     if replyer_memory_reference:
         metadata["replyer_memory_reference"] = replyer_memory_reference

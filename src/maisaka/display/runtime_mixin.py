@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from rich.console import Group, RenderableType
@@ -13,12 +14,18 @@ from src.chat.heart_flow.heartFC_utils import CycleDetail
 from src.cli.console import console
 from src.common.logger import get_logger
 from src.config.config import global_config
-from src.plugin_runtime.hook_payloads import deserialize_prompt_messages
+from src.llm_models.payload_content.context_item import AssistantMessageItem, ContextItemMeta, ContextTextPart
 
 from .display_utils import build_tool_call_summary_lines, format_token_count
 from .prompt_cli_renderer import PromptCLIVisualizer
 
 logger = get_logger("maisaka_runtime")
+
+
+@dataclass(slots=True)
+class ToolPromptAccessPanel:
+    panel: Panel
+    prompt_html_uri: str = ""
 
 
 class MaisakaRuntimeDisplayMixin:
@@ -29,15 +36,6 @@ class MaisakaRuntimeDisplayMixin:
         *,
         cycle_id: Optional[int] = None,
         time_records: Optional[dict[str, float]] = None,
-        timing_selected_history_count: Optional[int] = None,
-        timing_prompt_tokens: Optional[int] = None,
-        timing_model_name: Optional[str] = None,
-        timing_action: str = "",
-        timing_response: str = "",
-        timing_tool_calls: Optional[list[Any]] = None,
-        timing_tool_results: Optional[list[str]] = None,
-        timing_tool_detail_results: Optional[list[dict[str, Any]]] = None,
-        timing_prompt_section: Optional[RenderableType] = None,
         planner_selected_history_count: Optional[int] = None,
         planner_prompt_tokens: Optional[int] = None,
         planner_model_name: Optional[str] = None,
@@ -63,29 +61,6 @@ class MaisakaRuntimeDisplayMixin:
             panel_title = f"{panel_title} [{cycle_id}]"
         panel_subtitle = self._build_cycle_time_records_text(time_records or {})
         renderables: list[RenderableType] = [Text("\n".join(body_lines))]
-        timing_panel = self._build_cycle_stage_panel(
-            title="Timing Gate",
-            border_style="bright_magenta",
-            selected_history_count=timing_selected_history_count,
-            prompt_tokens=timing_prompt_tokens,
-            model_name=timing_model_name,
-            response_text=timing_response,
-            prompt_section=timing_prompt_section,
-            extra_lines=None,
-        )
-        if timing_panel is not None:
-            renderables.append(timing_panel)
-
-        timing_tool_cards = self._build_tool_activity_cards(
-            stage_title="Timing Tool",
-            tool_calls=timing_tool_calls,
-            tool_results=timing_tool_results,
-            tool_detail_results=timing_tool_detail_results,
-            planner_style=False,
-        )
-        if timing_tool_cards:
-            renderables.extend(timing_tool_cards)
-
         planner_panel = self._build_cycle_stage_panel(
             title="Planner",
             border_style="green",
@@ -133,14 +108,16 @@ class MaisakaRuntimeDisplayMixin:
     ) -> Optional[Panel]:
         """构建单个 cycle 阶段的展示卡片。"""
 
-        has_content = any([
-            selected_history_count is not None,
-            prompt_tokens is not None,
-            bool((model_name or "").strip()),
-            bool(response_text.strip()),
-            prompt_section is not None,
-            bool(extra_lines),
-        ])
+        has_content = any(
+            [
+                selected_history_count is not None,
+                prompt_tokens is not None,
+                bool((model_name or "").strip()),
+                bool(response_text.strip()),
+                prompt_section is not None,
+                bool(extra_lines),
+            ]
+        )
         if not has_content:
             return None
 
@@ -225,11 +202,10 @@ class MaisakaRuntimeDisplayMixin:
             return "流程耗时：无"
 
         label_map = {
-            "timing_gate": "Timing Gate",
             "planner": "Planner",
             "tool_calls": "工具执行",
         }
-        ordered_keys = ["timing_gate", "planner", "tool_calls"]
+        ordered_keys = ["planner", "tool_calls"]
 
         parts: list[str] = []
         for key in ordered_keys:
@@ -262,9 +238,7 @@ class MaisakaRuntimeDisplayMixin:
         return [
             result.strip()
             for result in tool_results
-            if isinstance(result, str)
-            and result.strip()
-            and result.strip() not in detailed_summaries
+            if isinstance(result, str) and result.strip() and result.strip() not in detailed_summaries
         ]
 
     @staticmethod
@@ -341,54 +315,76 @@ class MaisakaRuntimeDisplayMixin:
         tool_call_id: str,
         border_style: str = "bright_yellow",
         output_content: str = "",
+        output_items: Optional[list[Any]] = None,
         metadata: Optional[dict[str, Any]] = None,
-    ) -> Panel:
+        generation_attempts: Optional[list[dict[str, Any]]] = None,
+        prompt_title: str = "",
+        prompt_category: str = "",
+        request_kind: str = "",
+        selection_reason: str = "",
+    ) -> ToolPromptAccessPanel:
         """将工具 prompt 渲染为可点击查看的预览入口。"""
 
         labels = self._get_tool_detail_labels(tool_name)
-        subtitle = f"会话ID: {self.session_id}"
+        active_prompt_title = prompt_title.strip() or labels["prompt_title"]
+        active_prompt_category = prompt_category.strip() or labels["prompt_category"]
+        active_request_kind = request_kind.strip() or labels["request_kind"]
+        subtitle = selection_reason.strip() or f"会话ID: {self.session_id}"
         if tool_call_id:
             subtitle += f"\n调用ID: {tool_call_id}"
+        normalized_output_items = output_items or []
+        if not normalized_output_items and output_content.strip():
+            normalized_output_items = [
+                AssistantMessageItem(
+                    meta=ContextItemMeta.create(),
+                    parts=(ContextTextPart(output_content.strip()),),
+                )
+            ]
 
         if isinstance(request_messages, list) and request_messages:
-            try:
-                normalized_messages = deserialize_prompt_messages(request_messages)
-            except Exception as exc:
-                logger.warning(f"工具 {tool_name} 的 request_messages 无法反序列化，已回退为文本预览: {exc}")
-            else:
-                return Panel(
-                    PromptCLIVisualizer.build_prompt_access_panel(
-                        normalized_messages,
-                        category=labels["prompt_category"],
-                        chat_id=self.session_id,
-                        request_kind=labels["request_kind"],
-                        selection_reason=subtitle,
-                        output_content=output_content,
-                        metadata=metadata,
-                    ),
-                    title=labels["prompt_title"],
+            preview_access = PromptCLIVisualizer.build_prompt_preview_access(
+                request_messages,
+                category=active_prompt_category,
+                chat_id=self.session_id,
+                request_kind=active_request_kind,
+                selection_reason=subtitle,
+                output_items=normalized_output_items,
+                metadata=metadata,
+                generation_attempts=generation_attempts or [],
+            )
+            return ToolPromptAccessPanel(
+                panel=Panel(
+                    preview_access.body,
+                    title=active_prompt_title,
                     border_style=border_style,
                     padding=(0, 1),
-                )
+                ),
+                prompt_html_uri=preview_access.preview_web_uri,
+            )
 
-        return Panel(
-            PromptCLIVisualizer.build_text_access_panel(
-                prompt_text,
-                category=labels["prompt_category"],
-                chat_id=self.session_id,
-                request_kind=labels["request_kind"],
-                subtitle=subtitle,
-                output_content=output_content,
-                metadata=metadata,
+        preview_access = PromptCLIVisualizer.build_text_preview_access(
+            prompt_text,
+            category=active_prompt_category,
+            chat_id=self.session_id,
+            request_kind=active_request_kind,
+            subtitle=subtitle,
+            output_items=normalized_output_items,
+            metadata=metadata,
+            generation_attempts=generation_attempts or [],
+        )
+        return ToolPromptAccessPanel(
+            panel=Panel(
+                preview_access.body,
+                title=active_prompt_title,
+                border_style=border_style,
+                padding=(0, 1),
             ),
-            title=labels["prompt_title"],
-            border_style=border_style,
-            padding=(0, 1),
+            prompt_html_uri=preview_access.preview_web_uri,
         )
 
     @staticmethod
     def _build_prompt_preview_metadata_from_tool_metrics(metrics: Any) -> dict[str, Any]:
-        """从工具监控 metrics 中提取可写入 Prompt 预览的模型与耗时。"""
+        """从工具监控 metrics 中提取可写入 Prompt 预览的模型、耗时与 Token。"""
 
         if not isinstance(metrics, dict):
             return {}
@@ -404,6 +400,11 @@ class MaisakaRuntimeDisplayMixin:
                 metadata["duration_ms"] = duration_ms
                 break
 
+        for token_key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            token_count = metrics.get(token_key)
+            if isinstance(token_count, int) and not isinstance(token_count, bool):
+                metadata[token_key] = token_count
+
         return metadata
 
     def _normalize_tool_card_body_lines(self, body: Any) -> list[str]:
@@ -412,11 +413,7 @@ class MaisakaRuntimeDisplayMixin:
         if isinstance(body, str):
             return [line for line in body.splitlines() if line.strip()]
         if isinstance(body, list):
-            return [
-                str(item).strip()
-                for item in body
-                if str(item).strip()
-            ]
+            return [str(item).strip() for item in body if str(item).strip()]
         return []
 
     def _build_custom_tool_sub_cards(
@@ -436,9 +433,7 @@ class MaisakaRuntimeDisplayMixin:
                 continue
             title = str(sub_card.get("title") or "").strip() or "附加信息"
             border_style = str(sub_card.get("border_style") or "").strip() or default_border_style
-            body_lines = self._normalize_tool_card_body_lines(
-                sub_card.get("body_lines", sub_card.get("content", ""))
-            )
+            body_lines = self._normalize_tool_card_body_lines(sub_card.get("body_lines", sub_card.get("content", "")))
             if not body_lines:
                 continue
             renderables.append(
@@ -508,21 +503,68 @@ class MaisakaRuntimeDisplayMixin:
                 )
 
         output_text = str(detail.get("output_text") or "").strip()
+        output_items = detail.get("output_items") if isinstance(detail.get("output_items"), list) else None
+        generation_attempts = (
+            detail.get("generation_attempts") if isinstance(detail.get("generation_attempts"), list) else []
+        )
         prompt_text = str(detail.get("prompt_text") or "").strip()
-        if prompt_text:
-            parts.append(
-                self._build_tool_prompt_access_panel(
+        request_messages = detail.get("request_messages") if isinstance(detail.get("request_messages"), list) else None
+        if prompt_text or request_messages:
+            prompt_access_panel = self._build_tool_prompt_access_panel(
+                tool_name=tool_name,
+                prompt_text=prompt_text,
+                request_messages=request_messages,
+                tool_call_id=tool_call_id,
+                border_style=prompt_border_style,
+                output_content=output_text,
+                output_items=output_items,
+                metadata=preview_metadata,
+                generation_attempts=generation_attempts,
+            )
+            if prompt_access_panel.prompt_html_uri:
+                detail["prompt_html_uri"] = prompt_access_panel.prompt_html_uri
+            parts.append(prompt_access_panel.panel)
+
+        additional_prompt_records = detail.get("additional_prompt_records")
+        if isinstance(additional_prompt_records, list):
+            prompt_record_uris: list[str] = []
+            for index, record in enumerate(additional_prompt_records, start=1):
+                if not isinstance(record, dict):
+                    continue
+                record_prompt_text = str(record.get("prompt_text") or "").strip()
+                record_request_messages = (
+                    record.get("request_messages") if isinstance(record.get("request_messages"), list) else None
+                )
+                if not record_prompt_text and not record_request_messages:
+                    continue
+                record_metrics = record.get("metrics") if isinstance(record.get("metrics"), dict) else {}
+                record_metadata = self._build_prompt_preview_metadata_from_tool_metrics(record_metrics)
+                prompt_access_panel = self._build_tool_prompt_access_panel(
                     tool_name=tool_name,
-                    prompt_text=prompt_text,
-                    request_messages=(
-                        detail.get("request_messages") if isinstance(detail.get("request_messages"), list) else None
-                    ),
+                    prompt_text=record_prompt_text,
+                    request_messages=record_request_messages,
                     tool_call_id=tool_call_id,
                     border_style=prompt_border_style,
-                    output_content=output_text,
-                    metadata=preview_metadata,
+                    output_content=str(record.get("output_text") or ""),
+                    output_items=(
+                        record.get("output_items") if isinstance(record.get("output_items"), list) else None
+                    ),
+                    metadata=record_metadata,
+                    generation_attempts=(
+                        record.get("generation_attempts")
+                        if isinstance(record.get("generation_attempts"), list)
+                        else []
+                    ),
+                    prompt_title=str(record.get("prompt_title") or f"Prompt #{index}"),
+                    prompt_category=str(record.get("prompt_category") or ""),
+                    request_kind=str(record.get("request_kind") or ""),
+                    selection_reason=str(record.get("selection_reason") or ""),
                 )
-            )
+                if prompt_access_panel.prompt_html_uri:
+                    prompt_record_uris.append(prompt_access_panel.prompt_html_uri)
+                parts.append(prompt_access_panel.panel)
+            if prompt_record_uris:
+                detail["additional_prompt_html_uris"] = prompt_record_uris
 
         reasoning_text = str(detail.get("reasoning_text") or "").strip()
         if reasoning_text:

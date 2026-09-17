@@ -2,6 +2,10 @@
   "header": {
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
+    "switchSidebarToFixed": "切换为固定模式",
+    "switchSidebarToHover": "切换为悬浮模式",
+    "collapseTopbar": "收起顶栏",
+    "expandTopbar": "展开顶栏",
     "toggleConnection": "切换后端连接",
     "viewAnnualSummary": "查看年度总结",
     "annualSummary": "2025 年度总结",
@@ -21,17 +25,18 @@
       "overview": "概览",
       "botConfig": "麦麦配置编辑",
       "botResources": "麦麦资源管理",
-      "extensionsMonitor": "插件与扩展",
+      "extensionsMonitor": "扩展与集成",
+      "advancedTools": "高级工具",
       "system": "系统"
     },
     "menu": {
       "home": "首页",
+      "focusCompanion": "专注陪伴",
       "botMainConfig": "麦麦设置",
       "aiModelProvider": "模型厂商设置",
       "modelManagement": "模型管理",
-      "promptManagement": "Prompt 管理",
+      "promptManagement": "Prompt管理",
       "promptGenerator": "人设生成器（测试功能）",
-      "adapterConfig": "麦麦适配器配置",
       "emojiManagement": "表情包",
       "expressionManagement": "表达方式",
       "slangManagement": "黑话",
@@ -42,12 +47,129 @@
       "pluginMarket": "插件市场",
       "configTemplate": "配置模板市场",
       "pluginConfig": "插件管理",
+      "adapterManagement": "适配器管理",
       "mcpSettings": "MCP 设置",
+      "dataTransfer": "数据管理",
+      "statistics": "详细统计数据",
+      "replyEffects": "回复效果",
       "logViewer": "日志查看器",
       "reasoningProcess": "推理过程",
       "maisakaMonitor": "麦麦观察",
+      "chatManagement": "聊天管理",
       "localChat": "本地聊天室",
-      "settings": "系统设置"
+      "settings": "WEBUI设置"
+    }
+  },
+  "statisticsPage": {
+    "title": "详细统计数据",
+    "description": "查看麦麦运行期间的模型调用、Token、费用、消息与在线时长。",
+    "generatedAt": "统计截止时间：{{time}}",
+    "periodRange": "统计时段：{{start}} 至 {{end}}",
+    "empty": "当前统计时段暂无数据",
+    "actions": {
+      "refresh": "刷新",
+      "openHtml": "打开 HTML 版"
+    },
+    "error": {
+      "title": "详细统计加载失败",
+      "description": "请稍后重试"
+    },
+    "periods": {
+      "all_time": "自部署以来",
+      "last_30_days": "近30天",
+      "last_7_days": "近7天",
+      "last_3_days": "近3天",
+      "last_24_hours": "近1天",
+      "last_3_hours": "近3小时",
+      "last_hour": "近1小时",
+      "last_15_minutes": "近15分钟"
+    },
+    "tabs": {
+      "trends": "数据图表",
+      "metrics": "指标趋势"
+    },
+    "sections": {
+      "breakdowns": "分类统计",
+      "distributions": "数据分布图表"
+    },
+    "breakdowns": {
+      "models": "按模型",
+      "modules": "按模块",
+      "requestTypes": "按请求类型",
+      "chats": "聊天消息"
+    },
+    "summary": {
+      "onlineTime": "总在线时间",
+      "messages": "总消息数",
+      "replies": "总回复数",
+      "requests": "总请求数",
+      "tokens": "总Token数",
+      "inputTokens": "总输入Token",
+      "outputTokens": "总输出Token",
+      "cacheHitRate": "Prompt缓存命中率",
+      "cacheHitTokens": "缓存命中Token",
+      "cacheMissTokens": "缓存未命中Token",
+      "totalCost": "总花费",
+      "costPerMessages": "花费/消息数量",
+      "costPerReceivedMessages": "花费/接收消息数量",
+      "costPerReplies": "花费/回复数量",
+      "costPerHour": "花费/时间",
+      "tokensPerHour": "Token/时间"
+    },
+    "units": {
+      "per100": "每100条",
+      "perHour": "每小时"
+    },
+    "table": {
+      "name": "名称",
+      "requests": "调用次数",
+      "inputTokens": "输入Token",
+      "outputTokens": "输出Token",
+      "totalTokens": "Token总量",
+      "cacheHitTokens": "缓存命中Token",
+      "cacheMissTokens": "缓存未命中Token",
+      "cacheHitRate": "缓存命中率",
+      "cost": "累计花费",
+      "avgTime": "平均耗时",
+      "stdTime": "耗时标准差",
+      "callsPerReply": "每次回复平均调用次数",
+      "tokensPerReply": "每次回复平均Token",
+      "tokensPerCall": "每次调用平均Token",
+      "chat": "联系人/群组名称",
+      "messages": "消息数量"
+    },
+    "distributions": {
+      "ownerCosts": "调用来源花费分布",
+      "modelCosts": "模型花费分布",
+      "moduleCosts": "模块花费分布",
+      "requestTypeCosts": "请求类型花费分布",
+      "chatMessages": "聊天消息分布",
+      "chatCosts": "聊天流花费分布"
+    },
+    "charts": {
+      "timeRange": "时间范围",
+      "timeScale": "时间尺度",
+      "toggleSeries": "显示或隐藏 {{name}}"
+    },
+    "ranges": {
+      "6h": "6小时",
+      "12h": "12小时",
+      "24h": "24小时",
+      "48h": "48小时",
+      "7d": "7天",
+      "30d": "30天"
+    },
+    "trends": {
+      "totalCost": "总花费趋势",
+      "moduleCosts": "各模块花费趋势",
+      "modelCosts": "各模型花费趋势",
+      "chatMessages": "各聊天流消息数趋势"
+    },
+    "metrics": {
+      "costPerMessages": "花费/消息数量趋势",
+      "costPerHour": "花费/时间趋势",
+      "tokensPerHour": "Token/时间趋势",
+      "costPerReplies": "花费/回复数量趋势"
     }
   },
   "workspace": {
@@ -57,10 +179,9 @@
     "logs": "麦麦日志"
   },
   "chat": {
-    "defaultTab": "WebUI",
     "botNameFallback": "麦麦",
     "userFallback": "用户",
-    "userNameFallback": "WebUI用户",
+    "userNameFallback": "人类",
     "virtualGroupFallback": "WebUI虚拟群聊",
     "status": {
       "connected": "已连接",
@@ -70,6 +191,7 @@
     "actions": {
       "cancel": "取消",
       "addImage": "添加图片",
+      "openEmojiManager": "用户表情包",
       "reconnect": "重新连接",
       "removeImage": "移除图片",
       "save": "保存",
@@ -92,24 +214,48 @@
       "errorFallback": "发生错误",
       "thinking": "思考中..."
     },
+    "activity": {
+      "acting": "{{bot}} 正在行动{{retry}}",
+      "error": "{{bot}} 出错了{{retry}}",
+      "retrySuffix": " {{attempt}}/{{max}}",
+      "thinking": "{{bot}} 思考中{{retry}}",
+      "typing": "{{bot}} 正在输入{{retry}}"
+    },
     "composer": {
       "hint": "Enter 发送 · Shift + Enter 换行"
+    },
+    "emojiManager": {
+      "add": "添加",
+      "delete": "删除表情包",
+      "empty": "还没有用户表情包，点击添加即可使用。",
+      "hint": "点击表情包直接发送",
+      "send": "发送表情包",
+      "title": "我的表情包"
     },
     "sidebar": {
       "closeConversation": "关闭 {{label}}",
       "conversations": "聊天会话",
       "emptyPreview": "暂无消息",
       "identityHint": "本地聊天室身份",
+      "myChats": "与麦麦聊天",
+      "noSearchResults": "没有匹配的会话",
       "newVirtual": "新建虚拟身份对话",
+      "observedAvatarAlt": "{{name}} 的头像",
+      "observedBadge": "观察",
+      "observedChats": "麦麦的聊天流",
+      "openSettings": "打开 {{name}} 的聊天设置",
       "online": "在线",
+      "searchPlaceholder": "搜索聊天流…",
       "offline": "离线",
       "subtitle": "{{count}} 个会话",
       "title": "聊天",
-      "webuiBadge": "WebUI",
       "virtualBadge": "虚拟",
-      "profileTitle": "我的身份",
+      "editAvatar": "修改头像",
       "editName": "编辑昵称",
-      "saveName": "保存"
+      "saveName": "保存",
+      "savingAvatar": "正在保存头像",
+      "userAvatarAlt": "{{name}} 的头像",
+      "waitingObservedChats": "等待聊天流…"
     },
     "dialog": {
       "create": "创建对话",
@@ -142,6 +288,17 @@
       "videoUnsupported": "您的浏览器不支持视频播放"
     },
     "toast": {
+      "avatarSaved": "头像已保存",
+      "avatarSavedDesc": "新头像已经应用到麦麦聊天。",
+      "avatarSaveFailed": "头像保存失败",
+      "avatarSaveFailedDesc": "请稍后重试。",
+      "avatarUnsupported": "无法使用此头像",
+      "avatarUnsupportedDesc": "请选择不超过 5 MB 的 JPG、PNG、WebP、GIF 或 BMP 图片。",
+      "emojiDeleteFailed": "删除表情包失败",
+      "emojiLoadFailed": "加载表情包失败",
+      "emojiSendFailed": "发送表情包失败",
+      "emojiUnsupportedDesc": "请选择不超过 2 MB 的 JPG、PNG、WebP 或 GIF 图片。",
+      "emojiUploadFailed": "添加表情包失败",
       "backendUnavailable": "无法连接到后端服务，请确保 MaiBot 已启动",
       "backendUnavailableShort": "无法连接到后端服务",
       "connectionFailed": "连接失败",
@@ -165,7 +322,7 @@
     }
   },
   "layout": {
-    "verifyingLogin": "正在验证登录状态...",
+    "verifyingLogin": "麦麦正在啃食服务器...",
     "logoTitle": "MaiBot WebUI",
     "logoTitleShort": "M"
   },
@@ -176,7 +333,7 @@
     "dismiss": "关闭 HTTP 安全提示"
   },
   "settings": {
-    "title": "系统设置",
+    "title": "WEBUI设置",
     "description": "管理您的应用偏好设置",
     "tabs": {
       "appearance": "外观",
@@ -234,8 +391,6 @@
       "resetSuccessDesc": "主题已重置为默认值",
       "enableAnimations": "启用动画效果",
       "enableAnimationsDesc": "关闭后将禁用所有过渡动画和特效，提升性能",
-      "loginWavesBackground": "登录页波浪背景",
-      "loginWavesBackgroundDesc": "关闭后登录页将使用纯色背景，适合低性能设备",
       "inheritParentBg": "继承上级背景",
       "inheritParentBgDesc": "开启后将使用上级层级的背景配置",
       "fontFamilyLabel": "字体族 (Font Family)",
@@ -260,8 +415,6 @@
       "shadowXl": "极强 (Extra Large)",
       "blurLabel": "模糊效果 (Blur)",
       "sidebarWidthLabel": "侧边栏宽度 (Sidebar Width)",
-      "maxContentWidth": "内容区最大宽度 (Max Width)",
-      "spacingUnit": "基准间距 (Spacing Unit)",
       "animationSpeedLabel": "动画速度 (Speed)",
       "animationSpeedPlaceholder": "选择动画速度",
       "animationFast": "快速 (100ms)",
@@ -274,7 +427,25 @@
       "visualGroup": "视觉效果 (Visual)",
       "layoutGroup": "布局 (Layout)",
       "animationGroup": "动画 (Animation)",
-      "backgroundGroup": "背景设置 (Backgrounds)"
+      "backgroundGroup": "背景设置 (Backgrounds)",
+      "retroConfig": "未来复古质感",
+      "retroConfigDesc": "微调纸张、纹理和界面层次，所有变化都会即时预览。",
+      "retroPaperWarmth": "纸张暖度",
+      "retroPaperWarmthDesc": "从纯白逐渐过渡到当前的暖黄色纸面。",
+      "retroPaperWhite": "纯白",
+      "retroPaperWarm": "暖黄",
+      "retroTexture": "纸面纹理",
+      "retroTextureDesc": "选择颗粒、草稿纸点阵、横线，或保持干净背景。",
+      "retroTextureFine": "细磨砂",
+      "retroTextureCoarse": "粗磨砂",
+      "retroTextureDots": "点阵纸",
+      "retroTextureRuled": "横线纸",
+      "retroTextureNone": "无纹理",
+      "retroTextureIntensity": "纹理强度",
+      "retroPanelDepth": "面板层次",
+      "retroPanelDepthDesc": "控制凹陷区域与阴影的可见程度。",
+      "retroStrokeScale": "描边力度",
+      "retroStrokeScaleDesc": "调节卡片和控件硬朗描边的粗细。"
     },
     "security": {
       "currentToken": "当前 Access Token",
@@ -342,6 +513,14 @@
       "securityTip6": "建议使用系统生成的 Token 以获得最高安全性"
     },
     "other": {
+      "display": "展示设置",
+      "guidesAndNotices": "引导与提示",
+      "guidesAndNoticesDesc": "重置所有已完成的引导和已关闭的提示，不影响其他设置或业务数据。",
+      "resetGuidesAndNotices": "重置所有引导和提示",
+      "guidesResetDone": "引导和提示已重置",
+      "guidesResetDoneDesc": "已清除 {{count}} 项状态，重新进入对应页面后生效。",
+      "enableAvatarFetch": "获取并显示用户头像",
+      "enableAvatarFetchDesc": "关闭后，聊天页和推理过程不再请求头像接口，界面会显示默认头像。",
       "performance": "性能与存储",
       "localStorage": "本地存储使用",
       "logCache": "日志缓存大小",
@@ -397,6 +576,8 @@
       "confirmRerunSetup": "确认重新配置",
       "confirmRerunSetupDesc": "这将带您重新进入初次配置向导。您可以重新设置系统的基础配置项。确定要继续吗？",
       "devToolsDesc": "以下功能仅供开发调试使用，可能会导致页面崩溃或异常。",
+      "alwaysShowUpdateNotice": "永远显示更新日志",
+      "alwaysShowUpdateNoticeDesc": "开启后，每次进入 WebUI 都会依次弹出更新内容和插件兼容性提醒。刷新页面后生效。",
       "triggerError": "触发测试错误",
       "confirmTriggerError": "确认触发错误",
       "confirmTriggerErrorDesc": "这将手动触发一个 React 错误，用于测试错误边界组件的显示效果。页面将显示错误界面，您可以通过刷新页面或点击返回首页来恢复。",
@@ -448,6 +629,9 @@
         "radix": "无样式的可访问组件库",
         "tailwind": "实用优先的 CSS 框架",
         "lucide": "精美的图标库",
+        "iconifyReact": "统一图标渲染组件",
+        "streamlineSharp": "Streamline 设计的 Sharp 图标集，经 Iconify 提供，使用 CC BY 4.0 许可并保留署名",
+        "streamlineBlock": "Streamline 设计的 Block 图标集，经 Iconify 提供，使用 CC BY 4.0 许可并保留署名",
         "tanstackRouter": "类型安全的路由库",
         "zustand": "轻量级状态管理",
         "reactHookForm": "高性能表单库",
@@ -495,12 +679,7 @@
     "method2FileHint": "打开此文件，复制 access_token 字段的值",
     "securityTipTitle": "安全提示",
     "securityTip1": "请妥善保管您的 Token，不要泄露给他人",
-    "securityTip2": "如需重置 Token，请在登录后前往系统设置",
-    "slowLink": "我觉得这个界面很卡怎么办？",
-    "disableAnimTitle": "关闭背景动画",
-    "disableAnimDesc": "背景动画可能会在低性能设备上造成卡顿。关闭动画可以显著提升界面流畅度。",
-    "disableAnimDetail": "关闭动画后，背景将变为纯色，但不影响任何功能的使用。您可以随时在系统设置中重新开启动画。",
-    "disableAnimBtn": "关闭动画",
+    "securityTip2": "如需重置 Token，请在登录后前往 WEBUI设置",
     "verifyFailed": "Token 验证失败，请检查后重试",
     "connFailed": "连接服务器失败，请检查网络连接",
     "switchToLight": "切换到浅色模式",
@@ -508,6 +687,14 @@
   },
   "setupPage": {
     "steps": {
+      "botProfile": {
+        "title": "基础与人格",
+        "description": ""
+      },
+      "customToken": {
+        "title": "设置登录密码",
+        "description": ""
+      },
       "botBasic": {
         "title": "Bot基础",
         "description": "配置机器人的基本信息"
@@ -518,11 +705,11 @@
       },
       "apiProvider": {
         "title": "API配置",
-        "description": "配置 API 提供商"
+        "description": ""
       },
       "modelSetup": {
         "title": "模型配置",
-        "description": "配置 planner 和 replyer 模型"
+        "description": ""
       }
     },
     "loading": {
@@ -531,7 +718,7 @@
     },
     "header": {
       "title": "首次配置向导",
-      "description": "让我们一起完成麦麦的初始配置"
+      "description": ""
     },
     "progress": {
       "stepCounter": "步骤 {{current}} / {{total}}"
@@ -545,7 +732,8 @@
       "enterBaseUrl": "请输入 API Base URL",
       "enterApiKey": "请输入 API Key",
       "enterPlannerModelIdentifier": "请输入 planner 模型标识符",
-      "enterReplyerModelIdentifier": "请输入 replyer 模型标识符"
+      "enterReplyerModelIdentifier": "请输入 replyer 模型标识符",
+      "customTokenInvalid": "密码不符合要求：{{failedRules}}"
     },
     "toast": {
       "loadFailedTitle": "加载配置失败",
@@ -555,9 +743,11 @@
       "saveFailedTitle": "保存失败",
       "validationFailedTitle": "验证失败",
       "completeSuccessTitle": "配置完成",
-      "completeSuccessDescription": "{{appName}} 正在重启以应用新配置...",
+      "completeSuccessDescription": "{{appName}} 配置已保存并生效。",
       "completeFailedTitle": "配置失败",
       "skipFailedTitle": "跳过失败",
+      "customTokenSuccessTitle": "密码已更新",
+      "customTokenSuccessDescription": "请使用新的自定义密码重新登录，然后继续配置。",
       "unknownError": "未知错误"
     },
     "actions": {
@@ -565,12 +755,13 @@
       "next": "下一步",
       "skip": "跳过向导",
       "complete": "完成配置",
+      "saveToken": "保存密码",
       "saving": "保存中...",
       "completing": "完成中..."
     },
     "skipDialog": {
       "title": "确认跳过配置向导",
-      "description": "您可以随时在系统设置中重新进入配置向导。确定要跳过吗？",
+      "description": "您可以随时在 WEBUI设置中重新进入配置向导。确定要跳过吗？",
       "confirm": "确认跳过"
     },
     "footer": "您可以随时在设置中修改这些配置",
@@ -590,6 +781,16 @@
       }
     },
     "forms": {
+      "customToken": {
+        "noticeTitle": "当前仍在使用启动时随机密码",
+        "noticeDescription": "需要修改登录密码，如果不修改，每次会随机生成密码",
+        "label": "自定义密码 *",
+        "placeholder": "请输入一个安全且容易保存的密码",
+        "description": "",
+        "requirements": "密码要求",
+        "show": "显示密码",
+        "hide": "隐藏密码"
+      },
       "botBasic": {
         "platform": {
           "label": "平台 *",
@@ -640,11 +841,11 @@
         "multipleReplyStyle": {
           "label": "备用表达风格",
           "placeholder": "每行输入一种备用表达风格",
-          "description": "当列表不为空时，麦麦会按概率从这些风格中随机替换默认表达风格"
+          "description": "当列表不为空时，麦麦会按概率从这些风格中随机注入一次性表达提示"
         },
         "multipleProbability": {
-          "label": "备用风格触发概率",
-          "description": "每次构建回复时，从备用表达风格中随机替换默认表达风格的概率"
+          "label": "临时风格注入概率",
+          "description": "每次构建回复时，从备用表达风格中随机注入一次性表达提示的概率"
         }
       },
       "emoji": {
@@ -704,8 +905,8 @@
       "modelSetup": {
         "planner": {
           "identifier": {
-            "label": "用于规划的 模型 名称 *",
-            "description": "API 服务商提供的真实模型 ID"
+            "label": "用于规划的 模型 名称",
+            "description": "填写 API 服务商对应的模型标识，例如 deepseek-chat。"
           },
           "visual": {
             "label": "启用视觉"
@@ -713,15 +914,37 @@
         },
         "replyer": {
           "identifier": {
-            "label": "用于回复的 模型 名称 *",
-            "description": "API 服务商提供的真实模型 ID"
+            "label": "用于回复的 模型 名称",
+            "description": "填写 API 服务商对应的模型标识，例如 deepseek-chat。"
           },
           "visual": {
             "label": "启用视觉"
           }
-        },
-        "saveHint": "你可以稍后配置更详细的任务分配。"
+        }
       }
+    }
+  },
+  "versionCompatibility": {
+    "checking": "正在检查主程序与 WebUI 版本...",
+    "eyebrow": "版本兼容性警告",
+    "mainProgramVersion": "主程序版本",
+    "webuiVersion": "当前 WebUI 版本",
+    "requiredWebuiVersion": "主程序要求的 WebUI 版本",
+    "updateTargetLabel": "需要更新：{{target}}",
+    "riskWarning": "继续使用不匹配的版本可能导致页面异常、接口不可用或配置错误。建议完成更新后再继续操作。",
+    "countdownHint": "请阅读以上提示，{{seconds}} 秒后可以关闭此页面。",
+    "confirmHint": "你现在可以确认风险并继续使用。",
+    "countdownButton": "{{seconds}} 秒后可确认",
+    "confirmButton": "关闭提示并继续",
+    "webuiOutdated": {
+      "title": "WebUI 版本过低",
+      "description": "当前 WebUI v{{currentVersion}} 低于主程序要求的 v{{requiredVersion}}。请更新 WebUI 静态资源包。",
+      "updateTarget": "WebUI"
+    },
+    "mainProgramOutdated": {
+      "title": "主程序版本过低",
+      "description": "当前主程序 v{{mainVersion}} 仅声明支持 WebUI v{{requiredVersion}}，但正在运行 WebUI v{{webuiVersion}}。请更新 MaiBot 主程序。",
+      "updateTarget": "MaiBot 主程序"
     }
   },
   "common": {
@@ -769,13 +992,43 @@
     "copyError": "复制错误信息"
   },
   "search": {
-    "placeholder": "搜索页面...",
+    "placeholder": "搜索页面、配置或描述想解决的问题...",
     "title": "搜索",
-    "noResults": "未找到匹配的页面",
+    "noResults": "未找到匹配的页面或配置项",
     "startSearch": "输入关键词开始搜索",
+    "recent": "最近访问",
     "navigate": "导航",
     "select": "选择",
     "close": "关闭",
+    "aiSearch": "AI 搜索",
+    "aiSearching": "AI 理解中",
+    "aiHint": "可以描述你想调整的效果，例如“麦麦说话太频繁”",
+    "progressTitle": "搜索过程",
+    "progressExpand": "展开搜索过程",
+    "progressCollapse": "收起搜索过程",
+    "progressStart": "开始分析问题",
+    "progressPlanning": "第 {{round}} 轮：规划检索",
+    "progressSearchWebui": "搜索页面和配置",
+    "progressReadWebui": "读取页面与配置说明",
+    "progressSearchDocs": "搜索官方文档",
+    "progressReadDocs": "读取官方文档",
+    "progressTool": "执行搜索操作",
+    "progressCompleted": "{{action}}完成（{{count}} 项）",
+    "progressFailed": "{{action}}失败",
+    "progressFinalizing": "根据已读取资料整理回答",
+    "progressCorrecting": "检测到证据不足，正在重新整理回答",
+    "progressCacheHit": "已使用相同问题的缓存结果",
+    "progressAnswerCompleted": "回答生成完成",
+    "progressAnswerFailed": "回答生成失败",
+    "aiShortcut": "Ctrl + Enter",
+    "aiRecommendation": "AI 推荐",
+    "aiAnswer": "AI 答复",
+    "aiSuggestions": "建议",
+    "aiSources": "官方文档来源",
+    "aiUnderstood": "AI 理解为：{{terms}}",
+    "aiNoResults": "AI 没有找到足够相关的页面或配置项",
+    "aiFailed": "AI 搜索失败",
+    "indexLoading": "正在加载配置搜索索引…",
     "categories": {
       "overview": "概览",
       "config": "配置",
@@ -787,10 +1040,9 @@
     "items": {
       "home": "首页",
       "homeDesc": "查看仪表板概览",
+      "focusCompanionDesc": "打开麦麦沉浸专注陪伴",
       "botConfig": "麦麦设置",
       "botConfigDesc": "配置麦麦的核心设置",
-      "modelProvider": "模型厂商设置",
-      "modelProviderDesc": "配置模型提供商",
       "model": "麦麦模型配置",
       "modelDesc": "配置模型参数",
       "promptGeneratorDesc": "将文段或人设生成可注入配置的人设块",
@@ -807,11 +1059,12 @@
       "statisticsDesc": "查看使用统计",
       "plugins": "插件市场",
       "pluginsDesc": "浏览和安装插件",
+      "dataTransferDesc": "管理本地缓存，备份、导出或恢复 MaiBot 数据",
       "logs": "日志查看器",
       "logsDesc": "查看系统日志",
       "reasoningProcessDesc": "浏览 Maisaka prompt 推理记录",
-      "settings": "系统设置",
-      "settingsDesc": "配置系统参数"
+      "settings": "WEBUI设置",
+      "settingsDesc": "配置 WEBUI 参数"
     }
   },
   "a11y": {
@@ -820,9 +1073,187 @@
     "closeMenu": "关闭菜单",
     "navigatedTo": "已导航至 {{page}}"
   },
+  "memory": {
+    "records": {
+      "status": {
+        "active": "有效",
+        "inactive": "已停用",
+        "deleted": "已删除",
+        "conflicted": "有冲突",
+        "superseded": "已取代",
+        "retracted": "已撤回"
+      },
+      "evidenceType": {
+        "paragraph": "段落",
+        "relation": "关系",
+        "entity": "实体",
+        "fact": "事实",
+        "episode": "情景",
+        "profile": "画像",
+        "manual": "人工",
+        "unknown": "未知"
+      },
+      "evidenceStance": {
+        "support": "支持",
+        "refute": "反证"
+      },
+      "graphJobStatus": {
+        "pending": "待处理",
+        "running": "处理中",
+        "failed": "失败",
+        "completed": "已完成",
+        "cancelled": "已取消"
+      }
+    },
+    "tuning": {
+      "task": {
+        "title": "记忆搜索调优",
+        "description": "评估并改善记忆搜索效果"
+      },
+      "form": {
+        "parameters": "调优参数",
+        "parametersDescription": "这些设置只影响下一次调优任务，一般保持默认即可。",
+        "strategy": "调优策略",
+        "objective": "优化目标",
+        "intensity": "评估强度",
+        "evalScope": "评估范围",
+        "sampleSize": "样本量",
+        "topKEval": "每次评估查看数量",
+        "persist": "同时保存为默认设置"
+      },
+      "objectives": {
+        "precision": "优先准确率",
+        "balanced": "准确率与召回平衡",
+        "recall": "优先召回率"
+      },
+      "intensity": {
+        "quick": "快速",
+        "standard": "标准",
+        "deep": "深入"
+      },
+      "actions": {
+        "createTask": "开始调优",
+        "applyBest": "应用推荐结果",
+        "showToml": "查看高级配置",
+        "showSummary": "返回结果摘要"
+      },
+      "tasks": {
+        "title": "最近调优记录",
+        "description": "每次调优的执行结果",
+        "recommended": "推荐",
+        "notRecommended": "不建议应用",
+        "empty": "暂无调优记录"
+      },
+      "status": {
+        "completed": "已完成",
+        "running": "运行中",
+        "queued": "排队中",
+        "failed": "失败",
+        "cancelled": "已取消"
+      },
+      "result": {
+        "noTask": "暂无调优结果。创建并完成任务后，这里会显示评估结果。",
+        "statusTitle": "任务状态",
+        "progressTitle": "任务进度",
+        "roundsTitle": "已尝试次数",
+        "recommendationTitle": "应用建议",
+        "recommended": "验证通过，建议应用。",
+        "notRecommended": "验证未通过，不建议应用。",
+        "scoreTitle": "综合评分",
+        "validationTitle": "独立样本验证",
+        "validationPassed": "通过",
+        "validationFailed": "未通过",
+        "holdoutWithCount": "{{result}}，{{count}} 个样本",
+        "metricsTitle": "关键结果",
+        "metricsDescription": "展示调优前后的效果变化。",
+        "reason": "原因：{{reason}}",
+        "errorReason": "失败原因：{{reason}}",
+        "reasons": {
+          "holdoutEmpty": "独立样本不足，无法验证调优结果。",
+          "holdoutOnlineLikeValidationFailed": "独立样本和实际搜索效果验证未通过。",
+          "unknown": "{{reason}}"
+        },
+        "metrics": {
+          "precisionAt1": "首条命中率",
+          "recallAtK": "目标找回率",
+          "emptyRate": "无结果比例",
+          "avgElapsedMs": "平均响应时间"
+        }
+      },
+      "snapshot": {
+        "title": "当前调优结果",
+        "summaryDescription": "默认展示最近完成任务的评估结果，设置细节放在详情里。",
+        "tomlDescription": "面向排查的高级配置内容。",
+        "runtimeTitle": "当前使用中",
+        "runtimeDescription": "已经用于当前记忆搜索的设置。",
+        "runtimeResultApplied": "调优结果已经用于当前记忆搜索。",
+        "runtimeResultEmpty": "暂时没有正在使用的结果。",
+        "persistableTitle": "可保存设置",
+        "persistableDescription": "保存为默认设置时会保留的内容。",
+        "persistableResultReady": "这组结果可按需保存为默认设置。",
+        "persistableResultEmpty": "暂时没有可保存结果。",
+        "diffTitle": "差异项",
+        "diffDescription": "当前使用的设置和可保存设置不一致的项目。",
+        "diffResultClean": "当前使用的设置与可保存设置一致。",
+        "diffResultChanged": "当前使用的设置与可保存设置存在差异，展开详情可查看。",
+        "detailsTitle": "设置详情",
+        "detailsHint": "排查时查看",
+        "parameterDetailsTitle": "参数明细",
+        "runtimeShort": "当前使用",
+        "persistableShort": "保存后",
+        "empty": "暂无数据",
+        "noDiff": "两份配置当前没有差异。",
+        "technicalCount": "另有 {{count}} 个高级项目未在摘要中展示，可切到高级配置查看。",
+        "technicalDiffCount": "另有 {{count}} 个高级差异未在摘要中展示，可切到高级配置查看。"
+      },
+      "values": {
+        "enabled": "启用",
+        "disabled": "关闭",
+        "auto": "自动",
+        "always": "始终启用",
+        "off": "关闭",
+        "weightedRrf": "综合排序",
+        "rrf": "排序整合",
+        "alphaLegacy": "旧版综合排序",
+        "singlePool": "单路语义搜索",
+        "dualPool": "双路语义搜索"
+      },
+      "parameters": {
+        "retrieval_top_k": "初步查找数量",
+        "retrieval_top_k_paragraphs": "段落查找数量",
+        "retrieval_top_k_relations": "关系查找数量",
+        "retrieval_top_k_final": "最终展示数量",
+        "retrieval_alpha": "段落和关系侧重",
+        "retrieval_enable_ppr": "关系图辅助排序",
+        "retrieval_ppr_alpha": "关系图扩展强度",
+        "retrieval_ppr_timeout_seconds": "关系图处理上限",
+        "retrieval_search_smart_fallback_enabled": "找不到时自动补查",
+        "retrieval_sparse_enabled": "关键词查找",
+        "retrieval_sparse_mode": "关键词查找方式",
+        "retrieval_sparse_candidate_k": "关键词段落查找数量",
+        "retrieval_sparse_relation_candidate_k": "关键词关系查找数量",
+        "retrieval_fusion_method": "结果合并方式",
+        "retrieval_fusion_rrf_k": "结果合并稳定度",
+        "retrieval_fusion_vector_weight": "语义查找侧重",
+        "retrieval_fusion_bm25_weight": "关键词查找侧重",
+        "retrieval_vector_pools_mode": "语义搜索方式",
+        "retrieval_vector_pools_paragraph_top_k": "段落语义查找数量",
+        "retrieval_vector_pools_graph_top_k": "关系图语义查找数量",
+        "retrieval_vector_pools_graph_expand_paragraph_k": "关系图补充段落数",
+        "retrieval_vector_pools_relation_expand_per_hit": "每次命中补充关系数",
+        "retrieval_vector_pools_entity_expand_per_hit": "每次命中补充实体数",
+        "retrieval_vector_pools_relation_evidence_weight": "关系证据侧重",
+        "retrieval_vector_pools_entity_evidence_weight": "实体证据侧重",
+        "threshold_percentile": "自动筛选强度",
+        "threshold_min_results": "最少展示数量",
+        "threshold_min_threshold": "最低筛选线",
+        "threshold_max_threshold": "最高筛选线"
+      }
+    }
+  },
   "home": {
     "title": "首页",
-    "subtitle": "观看基本信息和快捷入口",
+    "subtitle": "查看基本信息和快捷入口",
     "loading": "加载中...",
     "loadingHint": "加载中...",
     "timeRange": {
@@ -831,25 +1262,112 @@
       "30d": "30天"
     },
     "autoRefresh": "自动刷新",
+    "hitokoto": {
+      "title": "一言",
+      "edit": "编辑一言",
+      "editor": {
+        "title": "编辑一言",
+        "description": "管理首页展示的一言来源与自定义内容。",
+        "defaultSource": "使用默认一言",
+        "defaultSourceDescription": "开启后会从一言接口获取内容，并与自定义内容轮换展示。",
+        "customList": "自定义内容",
+        "customListDescription": "可添加多条内容，出处可以留空。",
+        "add": "新增内容",
+        "empty": "还没有自定义内容，点击添加第一条",
+        "item": "内容 {{index}}",
+        "remove": "删除内容 {{index}}",
+        "content": "内容 {{index}} 正文",
+        "contentPlaceholder": "输入想在首页展示的内容",
+        "source": "内容 {{index}} 出处",
+        "sourcePlaceholder": "出处（可选）",
+        "blankHint": "默认一言已停用且自定义列表为空，首页一言区域将保持留白。",
+        "saving": "保存中..."
+      }
+    },
+    "cards": {
+      "add": "新增卡片",
+      "edit": "编辑卡片",
+      "editCard": "编辑卡片：{{title}}",
+      "editContent": "编辑卡片内容",
+      "done": "完成编辑",
+      "reset": "恢复默认",
+      "styles": {
+        "default": {
+          "title": "默认样式",
+          "description": "使用当前主题的标准卡片外观。"
+        },
+        "orange": {
+          "title": "橙色底背景色字",
+          "description": "使用主题橙色作为底色，背景色作为文字颜色。"
+        },
+        "borderless": {
+          "title": "无边框无底纹",
+          "description": "移除卡片边框、底色、底纹和阴影。"
+        }
+      },
+      "styleDialog": {
+        "title": "编辑「{{title}}」",
+        "description": "选择这张卡片在首页中的显示样式。",
+        "done": "完成"
+      },
+      "row": {
+        "low": "低行",
+        "high": "高行"
+      },
+      "categories": {
+        "status": "运行状态",
+        "statistics": "统计图表",
+        "analysis": "模型分析",
+        "plugin": "插件卡片"
+      },
+      "dialog": {
+        "title": "管理首页卡片",
+        "description": "添加插件或内置提供的卡片，或恢复默认布局。",
+        "hiddenCards": "可添加卡片",
+        "noHiddenCards": "暂无可添加卡片",
+        "restore": "添加",
+        "reset": "恢复默认布局",
+        "cancel": "关闭"
+      }
+    },
     "botStatus": {
       "title": "麦麦状态",
       "loading": "读取中",
-      "running": "运行中",
+      "running": "活动",
       "stopped": "已停止",
       "unknown": "未知",
+      "uptimeLabel": "运行时间",
       "uptime": "{{time}}",
+      "enabled": "已启用",
+      "disabled": "未启用",
       "visualEnabled": "启用视觉",
-      "memoryEnabled": "启用记忆"
+      "memoryEnabled": "启用记忆",
+      "recentOnline": "最近在线",
+      "recentOnlineRange": "最近 24 小时",
+      "recentOnlineChart": "最近 24 小时在线时长图表",
+      "recentOnlineTotal": "在线 {{time}}",
+      "online": "在线",
+      "clickToReturn": "点击返回状态",
+      "showRecentOnline": "查看最近在线图表",
+      "showStatus": "返回活动状态"
     },
     "versionCard": {
       "title": "麦麦版本",
+      "maibotVersion": "MAIBOT",
+      "consoleVersion": "CONSOLE",
+      "updateAvailable": "UPDATE",
+      "mismatch": "版本不匹配",
       "mainVersion": "主程序版本",
       "webuiVersion": "WebUI 版本",
-      "latestVersion": "最新版本",
-      "stableLatest": "正式版最新",
-      "testLatest": "测试版最新",
+      "stableLatest": "最新版本",
       "githubReleases": "GitHub Releases",
       "unknown": "未知"
+    },
+    "platformGuide": {
+      "title": "添加平台账号",
+      "description": "还没有配置麦麦用于连接消息平台的账号。",
+      "detail": "配置平台和账号后，麦麦才能接入 QQ 等消息软件收发消息。",
+      "action": "去添加平台账号"
     },
     "quickActions": {
       "title": "快速操作",
@@ -858,7 +1376,7 @@
       "expressionReview": "表达审核",
       "viewLogs": "查看日志",
       "pluginManage": "插件管理",
-      "systemSettings": "系统设置",
+      "systemSettings": "WEBUI设置",
       "pluginConfig": "插件配置",
       "appearanceSettings": "外观设置",
       "localCache": "本地缓存",
@@ -877,7 +1395,7 @@
         "expressionReview": "打开表达学习审核弹窗",
         "viewLogs": "查看 WebUI 日志",
         "pluginManage": "打开插件市场与插件管理",
-        "systemSettings": "打开系统设置",
+        "systemSettings": "打开 WEBUI设置",
         "pluginConfig": "打开已安装插件配置页面",
         "appearanceSettings": "打开设置 / 外观",
         "localCache": "打开设置 / 本地缓存",
@@ -924,13 +1442,17 @@
     },
     "stats": {
       "overviewTitle": "统计概览",
+      "overviewDesc": "关键运行指标",
+      "timeRange": "统计时间范围",
       "totalRequests": "总请求数",
       "totalCost": "总花费",
       "tokenUsage": "Token消耗",
+      "inputTokens": "输入",
+      "outputTokens": "输出",
       "avgResponse": "平均响应",
       "avgResponseDesc": "API平均耗时",
       "onlineTime": "在线时长",
-      "messageProcessing": "消息处理",
+      "messageProcessing": "消息",
       "costEfficiency": "成本效率",
       "recentPeriod": "最近{{range}}",
       "perHour": "{{value}}/小时",
@@ -940,6 +1462,16 @@
       "seconds": "秒",
       "hours": "小时",
       "days": "天"
+    },
+    "cache": {
+      "title": "Prompt缓存",
+      "description": "缓存输入Token的命中情况",
+      "hitRate": "缓存命中率",
+      "all": "全部",
+      "chat": "聊天",
+      "hitTokens": "命中Token",
+      "missTokens": "未命中Token",
+      "eligibleTokens": "参与统计 {{value}} Token"
     },
     "storage": {
       "title": "存储占用",
@@ -952,6 +1484,10 @@
       "files": "{{count}} 个文件",
       "filesAndRecords": "{{files}} 个文件 · {{records}} 条记录",
       "databaseDetail": "{{files}} 个文件 · {{tables}} 张表",
+      "sizeMode": "大小",
+      "countMode": "数量",
+      "switchDisplay": "切换存储信息显示方式",
+      "countSummary": "{{files}} 文件 · {{records}} 记录 · {{tables}} 表",
       "readingDescription": "正在读取本地存储占用...",
       "unavailable": "暂未获取到本地存储占用",
       "manage": "管理存储"
@@ -965,18 +1501,22 @@
       },
       "requestTrend": "请求趋势",
       "requestTrendDesc": "最近{{hours}}小时的请求量变化",
+      "requestTrendDescCompact": "分时请求量变化",
       "costTrend": "花费趋势",
       "costTrendDesc": "API调用成本变化",
       "tokenUsage": "Token消耗",
       "tokenUsageDesc": "Token使用量变化",
-      "modelDistribution": "模型请求分布",
-      "modelDistributionDesc": "各模型使用占比 (共 {{count}} 个模型)",
+      "tokenUsageSplitDesc": "输入与输出Token变化",
+      "modelDistribution": "模型花费分布",
+      "modelDistributionDesc": "各模型花费占比 (共 {{count}} 个模型)",
+      "modelDistributionCardDesc": "各模型的累计花费占比",
       "modelDetails": "模型详细统计",
       "modelDetailsDesc": "请求数、花费和性能",
-      "recentActivity": "最近活动",
-      "recentActivityDesc": "最新的API调用记录",
+      "modelDetailsTokenDesc": "模型调用、Token、缓存和费用",
       "dailyStats": "每日统计",
       "dailyStatsDesc": "最近7天的数据汇总",
+      "dailyStatsRangeDesc": "所选时段的每日汇总",
+      "date": "日期",
       "requests": "请求数",
       "cost": "花费(¥)",
       "requestCount": "请求数",
@@ -986,7 +1526,7 @@
       "status": "状态"
     },
     "time": {
-      "hoursMinutes": "{{hours}}小时{{minutes}}分钟"
+      "hoursMinutes": "{{hours}}小时{{minutes}}分"
     },
     "hitokotoFallback": "人生就像一盒巧克力，你永远不知道下一颗是什么味道。",
     "hitokotoFallbackFrom": "阿甘正传",

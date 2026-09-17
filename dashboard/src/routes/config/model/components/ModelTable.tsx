@@ -2,6 +2,9 @@
  * 模型列表 - 桌面端表格视图
  */
 import React from 'react'
+import { Loader2, Pencil, Trash2, Zap } from 'lucide-react'
+
+import type { ModelTestResult } from '@/lib/config-api'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -12,7 +15,8 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Pencil, Trash2 } from 'lucide-react'
+import { StreamlineIcon } from '@/components/ui/streamline-icon'
+
 import type { ModelInfo } from '../types'
 
 interface ModelTableProps {
@@ -28,14 +32,50 @@ interface ModelTableProps {
   onEdit: (model: ModelInfo, index: number) => void
   /** 删除模型回调 */
   onDelete: (index: number) => void
+  /** 测试模型回调 */
+  onTest: (modelName: string) => void
   /** 切换选中状态回调 */
   onToggleSelection: (index: number) => void
   /** 切换全选回调 */
   onToggleSelectAll: () => void
   /** 检查模型是否被使用 */
   isModelUsed: (modelName: string) => boolean
+  /** 正在测试的模型名称集合 */
+  testingModels: Set<string>
+  /** 模型测试结果 */
+  modelTestResults: Map<string, ModelTestResult>
   /** 搜索关键词 */
   searchQuery: string
+}
+
+function getModelTestStatus(result: ModelTestResult | undefined, isTesting: boolean) {
+  if (isTesting) {
+    return {
+      description: '正在测试模型能力',
+      className: 'border-amber-500 animate-pulse',
+    }
+  }
+
+  if (!result) {
+    return {
+      description: '未测试：尚未执行模型能力测试',
+      className: 'border-transparent',
+    }
+  }
+
+  if (result.success) {
+    return {
+      description: `测试通过：文本${result.visual_tested ? '、视觉' : ''}与工具调用正常${
+        result.latency_ms != null ? `，耗时 ${(result.latency_ms / 1000).toFixed(2)}s` : ''
+      }`,
+      className: 'border-green-500',
+    }
+  }
+
+  return {
+    description: result.error || '模型能力测试未通过',
+    className: 'border-red-500',
+  }
 }
 
 export const ModelTable = React.memo(function ModelTable({
@@ -45,45 +85,55 @@ export const ModelTable = React.memo(function ModelTable({
   selectedModels,
   onEdit,
   onDelete,
+  onTest,
   onToggleSelection,
   onToggleSelectAll,
   isModelUsed,
+  testingModels,
+  modelTestResults,
   searchQuery,
 }: ModelTableProps) {
   return (
-    <div className="hidden md:block rounded-lg border bg-card overflow-hidden">
+    <div
+      data-model-config-table-surface="true"
+      className="hidden overflow-hidden rounded-lg border bg-transparent md:block"
+    >
       <div className="overflow-x-auto">
         <Table aria-label="模型列表">
           <TableHeader>
             <TableRow>
               <TableHead className="w-12">
                 <Checkbox
-                  checked={selectedModels.size === filteredModels.length && filteredModels.length > 0}
+                  checked={
+                    selectedModels.size === filteredModels.length && filteredModels.length > 0
+                  }
                   onCheckedChange={onToggleSelectAll}
                 />
               </TableHead>
-              <TableHead className="w-14 text-center">使用</TableHead>
+              <TableHead className="w-14 text-center whitespace-nowrap">使用</TableHead>
               <TableHead>模型名称</TableHead>
               <TableHead>模型标识符</TableHead>
               <TableHead>提供商</TableHead>
-              <TableHead className="w-14 text-center">视觉</TableHead>
-              <TableHead className="text-center">温度</TableHead>
-              <TableHead className="text-right">输入价格</TableHead>
-              <TableHead className="text-right">输出价格</TableHead>
-              <TableHead className="text-right">操作</TableHead>
+              <TableHead className="w-14 text-center whitespace-nowrap">视觉</TableHead>
+              <TableHead className="text-right whitespace-nowrap">输入</TableHead>
+              <TableHead className="text-right whitespace-nowrap">输出</TableHead>
+              <TableHead className="text-right" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {paginatedModels.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={9} className="text-muted-foreground py-8 text-center">
                   {searchQuery ? '未找到匹配的模型' : '暂无模型配置'}
                 </TableCell>
               </TableRow>
             ) : (
               paginatedModels.map((model, displayIndex) => {
-                const actualIndex = allModels.findIndex(m => m === model)
+                const actualIndex = allModels.findIndex((m) => m === model)
                 const used = isModelUsed(model.name)
+                const isTesting = testingModels.has(model.name)
+                const testResult = modelTestResults.get(model.name)
+                const testStatus = getModelTestStatus(testResult, isTesting)
                 return (
                   <TableRow key={displayIndex}>
                     <TableCell>
@@ -103,7 +153,15 @@ export const ModelTable = React.memo(function ModelTable({
                         aria-label={used ? '已使用' : '未使用'}
                       />
                     </TableCell>
-                    <TableCell className="font-medium">{model.name}</TableCell>
+                    <TableCell className="font-medium">
+                      <span
+                        className={`inline-block border-b-2 pb-0.5 ${testStatus.className}`}
+                        title={testStatus.description}
+                        aria-label={testStatus.description}
+                      >
+                        {model.name}
+                      </span>
+                    </TableCell>
                     <TableCell className="max-w-xs truncate" title={model.model_identifier}>
                       {model.model_identifier}
                     </TableCell>
@@ -119,28 +177,52 @@ export const ModelTable = React.memo(function ModelTable({
                         aria-label={model.visual ? '已启用视觉' : '未启用视觉'}
                       />
                     </TableCell>
-                    <TableCell className="text-center">
-                      {model.temperature != null ? model.temperature : <span className="text-muted-foreground">-</span>}
-                    </TableCell>
                     <TableCell className="text-right">¥{model.price_in}/M</TableCell>
                     <TableCell className="text-right">¥{model.price_out}/M</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
                         <Button
-                          variant="default"
-                          size="sm"
-                          onClick={() => onEdit(model, actualIndex)}
+                          variant="outline"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => onTest(model.name)}
+                          disabled={isTesting}
+                          title="测试模型"
+                          aria-label={`测试模型 ${model.name}`}
                         >
-                          <Pencil className="h-4 w-4 mr-1" strokeWidth={2} fill="none" />
-                          编辑
+                          {isTesting ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Zap className="h-4 w-4" />
+                          )}
                         </Button>
                         <Button
-                          size="sm"
-                          onClick={() => onDelete(actualIndex)}
-                          className="bg-red-600 hover:bg-red-700 text-white"
+                          variant="outline"
+                          size="icon"
+                          className="border-primary! text-primary hover:text-primary h-8 w-8"
+                          onClick={() => onEdit(model, actualIndex)}
+                          title="编辑"
+                          aria-label={`编辑模型 ${model.name}`}
                         >
-                          <Trash2 className="h-4 w-4 mr-1" strokeWidth={2} fill="none" />
-                          删除
+                          <StreamlineIcon
+                            name="edit-pdf-solid"
+                            fallback={Pencil}
+                            className="h-4 w-4"
+                          />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          className="border-destructive! text-destructive hover:text-destructive h-8 w-8"
+                          onClick={() => onDelete(actualIndex)}
+                          title="删除"
+                          aria-label={`删除模型 ${model.name}`}
+                        >
+                          <StreamlineIcon
+                            name="delete-2-solid"
+                            fallback={Trash2}
+                            className="h-4 w-4"
+                          />
                         </Button>
                       </div>
                     </TableCell>

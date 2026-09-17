@@ -5,15 +5,19 @@
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import asyncio
 import json
 import time
 
 from src.common.logger import get_logger
+from src.maisaka.context.usage import ContextSectionUsage
+from src.maisaka.display.display_utils import format_tool_call_for_display
 
 logger = get_logger("maisaka_monitor")
 
 MONITOR_DOMAIN = "maisaka_monitor"
 MONITOR_TOPIC = "main"
+NON_PERSISTED_EVENTS = {"stage.status", "stage.removed", "stage.snapshot"}
 
 
 def _normalize_payload_value(value: Any) -> Any:
@@ -83,6 +87,7 @@ def _normalize_tool_call_arguments(arguments: Any) -> tuple[Any, Optional[str]]:
 def _serialize_single_tool_call(tool_call: Any) -> Dict[str, Any]:
     """将不同来源的 tool_call 标准化为前端可直接展示的结构。"""
 
+    display_payload = format_tool_call_for_display(tool_call)
     if isinstance(tool_call, dict):
         function_info = tool_call.get("function")
         if isinstance(function_info, dict):
@@ -100,6 +105,9 @@ def _serialize_single_tool_call(tool_call: Any) -> Dict[str, Any]:
         }
         if arguments_raw is not None:
             serialized["arguments_raw"] = arguments_raw
+        for key in ("source", "source_label", "extra_content"):
+            if display_payload.get(key):
+                serialized[key] = display_payload[key]
         return serialized
 
     raw_arguments = getattr(tool_call, "args", None)
@@ -113,6 +121,9 @@ def _serialize_single_tool_call(tool_call: Any) -> Dict[str, Any]:
     }
     if arguments_raw is not None:
         serialized["arguments_raw"] = arguments_raw
+    for key in ("source", "source_label", "extra_content"):
+        if display_payload.get(key):
+            serialized[key] = display_payload[key]
     return serialized
 
 
@@ -202,21 +213,71 @@ def _serialize_tool_results(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             "tool_call_id": str(tool.get("tool_call_id", "")),
             "tool_name": str(tool.get("tool_name", "")),
             "tool_args": _normalize_payload_value(tool.get("tool_args", {})),
+            "tool_call_source": str(tool.get("tool_call_source", "")),
+            "tool_call_source_label": str(tool.get("tool_call_source_label", "")),
             "success": bool(tool.get("success", False)),
+            "stop_after_execution": bool(tool.get("stop_after_execution", False)),
             "duration_ms": float(tool.get("duration_ms", 0.0) or 0.0),
             "summary": str(tool.get("summary", "")),
         }
         detail = tool.get("detail")
+        prompt_html_uri = str(tool.get("prompt_html_uri") or "").strip()
+        if not prompt_html_uri and isinstance(detail, dict):
+            prompt_html_uri = str(detail.get("prompt_html_uri") or "").strip()
+        if prompt_html_uri:
+            serialized_tool["prompt_html_uri"] = prompt_html_uri
         if detail is not None:
             serialized_tool["detail"] = _normalize_payload_value(detail)
         serialized_tools.append(serialized_tool)
     return serialized_tools
 
 
+def _serialize_native_tool_calls(tool_calls: List[Any]) -> List[Dict[str, Any]]:
+    """序列化 Provider 原生工具摘要，不读取 Item 的原生 replay fragment。"""
+
+    serialized_calls: List[Dict[str, Any]] = []
+    for tool_call in tool_calls:
+        if isinstance(tool_call, dict):
+            tool_type = tool_call.get("tool_type", "")
+            call_id = tool_call.get("call_id", "")
+            status = tool_call.get("status", "")
+            action_type = tool_call.get("action_type", "")
+            details = tool_call.get("details", [])
+            source_count = tool_call.get("source_count", 0)
+        else:
+            tool_type = getattr(tool_call, "tool_type", "")
+            call_id = getattr(tool_call, "call_id", "")
+            status = getattr(tool_call, "status", "")
+            action_type = getattr(tool_call, "action_type", "")
+            details = getattr(tool_call, "details", [])
+            source_count = getattr(tool_call, "source_count", 0)
+        serialized_calls.append(
+            {
+                "tool_type": str(tool_type),
+                "call_id": str(call_id),
+                "status": str(status),
+                "action_type": str(action_type),
+                "details": [str(item) for item in list(details or [])],
+                "source_count": int(source_count or 0),
+            }
+        )
+    return serialized_calls
+
+
+def _serialize_context_sections(sections: Optional[List[ContextSectionUsage]]) -> List[Dict[str, Any]]:
+    """标准化提示词分段用量列表。"""
+
+    return [
+        {"key": section.key, "chars": int(section.chars), "count": int(section.count)}
+        for section in list(sections or [])
+    ]
+
+
 def _serialize_request_block(
     messages: Optional[List[Any]],
     selected_history_count: Optional[int],
     tool_count: Optional[int],
+    context_sections: Optional[List[ContextSectionUsage]] = None,
 ) -> Optional[Dict[str, Any]]:
     """标准化请求区块。"""
 
@@ -227,23 +288,28 @@ def _serialize_request_block(
         "messages": _serialize_messages(list(messages or [])),
         "selected_history_count": int(selected_history_count or 0),
         "tool_count": int(tool_count or 0),
+        "context_sections": _serialize_context_sections(context_sections),
     }
 
 
 def _serialize_planner_block(
     content: Optional[str],
     tool_calls: Optional[List[Any]],
+    native_tool_calls: Optional[List[Any]],
     prompt_tokens: Optional[int],
     completion_tokens: Optional[int],
     total_tokens: Optional[int],
     duration_ms: Optional[float],
     prompt_html_uri: Optional[str] = None,
+    prompt_cache_hit_tokens: Optional[int] = None,
+    prompt_cache_miss_tokens: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """标准化 planner 结果区块。"""
 
     if (
         content is None
         and tool_calls is None
+        and native_tool_calls is None
         and prompt_tokens is None
         and completion_tokens is None
         and total_tokens is None
@@ -255,61 +321,14 @@ def _serialize_planner_block(
     return {
         "content": content,
         "tool_calls": _serialize_tool_calls_from_objects(list(tool_calls or [])),
+        "native_tool_calls": _serialize_native_tool_calls(list(native_tool_calls or [])),
         "prompt_tokens": int(prompt_tokens or 0),
         "completion_tokens": int(completion_tokens or 0),
         "total_tokens": int(total_tokens or 0),
+        "prompt_cache_hit_tokens": int(prompt_cache_hit_tokens or 0),
+        "prompt_cache_miss_tokens": int(prompt_cache_miss_tokens or 0),
         "duration_ms": float(duration_ms or 0.0),
         "prompt_html_uri": str(prompt_html_uri or ""),
-    }
-
-
-def _serialize_timing_gate_block(
-    *,
-    request_messages: Optional[List[Any]],
-    selected_history_count: Optional[int],
-    tool_count: Optional[int],
-    action: Optional[str],
-    content: Optional[str],
-    tool_calls: Optional[List[Any]],
-    tool_results: Optional[List[str]],
-    prompt_tokens: Optional[int],
-    completion_tokens: Optional[int],
-    total_tokens: Optional[int],
-    duration_ms: Optional[float],
-) -> Optional[Dict[str, Any]]:
-    """标准化 Timing Gate 结果区块。"""
-
-    if (
-        request_messages is None
-        and selected_history_count is None
-        and tool_count is None
-        and action is None
-        and content is None
-        and tool_calls is None
-        and tool_results is None
-        and prompt_tokens is None
-        and completion_tokens is None
-        and total_tokens is None
-        and duration_ms is None
-    ):
-        return None
-
-    return {
-        "request": _serialize_request_block(
-            request_messages,
-            selected_history_count,
-            tool_count,
-        ),
-        "result": {
-            "action": action,
-            "content": content,
-            "tool_calls": _serialize_tool_calls_from_objects(list(tool_calls or [])),
-            "tool_results": _normalize_payload_value(list(tool_results or [])),
-            "prompt_tokens": int(prompt_tokens or 0),
-            "completion_tokens": int(completion_tokens or 0),
-            "total_tokens": int(total_tokens or 0),
-            "duration_ms": float(duration_ms or 0.0),
-        },
     }
 
 
@@ -320,11 +339,16 @@ async def _broadcast(event: str, data: Dict[str, Any]) -> None:
         from src.webui.routers.websocket.manager import websocket_manager
 
         data = _enrich_session_identity(data)
+        broadcast_data = data
+        if event not in NON_PERSISTED_EVENTS:
+            from src.maisaka.monitor.event_store import record_monitor_event
+
+            broadcast_data = await asyncio.to_thread(record_monitor_event, event, data)
         await websocket_manager.broadcast_to_topic(
             domain=MONITOR_DOMAIN,
             topic=MONITOR_TOPIC,
             event=event,
-            data=data,
+            data=broadcast_data,
         )
     except Exception as exc:
         logger.warning(f"MaiSaka 监控事件广播失败: {exc}", exc_info=True)
@@ -393,12 +417,64 @@ async def emit_stage_removed(
     })
 
 
+async def emit_llm_retry(
+    *,
+    session_id: str,
+    task_name: str,
+    request_type: str,
+    model_name: str,
+    attempt: int,
+    max_attempts: int,
+    reason: str,
+    retry_interval: float,
+) -> None:
+    """广播模型请求失败后的重试进度。"""
+
+    await _broadcast("llm.retry", {
+        "session_id": session_id,
+        "task_name": task_name,
+        "request_type": request_type,
+        "model_name": model_name,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "reason": reason,
+        "retry_interval": retry_interval,
+        "timestamp": time.time(),
+    })
+
+
+async def emit_llm_error(
+    *,
+    session_id: str,
+    task_name: str,
+    request_type: str,
+    model_name: str,
+    message: str,
+) -> None:
+    """广播模型请求最终失败。"""
+
+    await _broadcast("llm.error", {
+        "session_id": session_id,
+        "task_name": task_name,
+        "request_type": request_type,
+        "model_name": model_name,
+        "message": message,
+        "timestamp": time.time(),
+    })
+
+
 async def emit_message_ingested(
     session_id: str,
     speaker_name: str,
     content: str,
     message_id: str,
     timestamp: float,
+    *,
+    platform: str = "",
+    user_id: str = "",
+    group_id: str = "",
+    reply_to: Optional[Dict[str, Any]] = None,
+    media: Optional[list[Dict[str, Any]]] = None,
 ) -> None:
     """广播新消息注入事件。"""
 
@@ -407,6 +483,11 @@ async def emit_message_ingested(
         "speaker_name": speaker_name,
         "content": content,
         "message_id": message_id,
+        "platform": platform,
+        "user_id": user_id,
+        "group_id": group_id,
+        "reply_to": _normalize_payload_value(reply_to) if reply_to else None,
+        "media": _normalize_payload_value(media) if media else [],
         "timestamp": timestamp,
     })
 
@@ -418,6 +499,12 @@ async def emit_message_sent(
     message_id: str,
     timestamp: float,
     source_kind: str = "",
+    *,
+    platform: str = "",
+    user_id: str = "",
+    group_id: str = "",
+    reply_to: Optional[Dict[str, Any]] = None,
+    media: Optional[list[Dict[str, Any]]] = None,
 ) -> None:
     """广播 MaiSaka 自己发送的消息事件。"""
 
@@ -427,74 +514,43 @@ async def emit_message_sent(
         "content": content,
         "message_id": message_id,
         "source_kind": source_kind,
+        "platform": platform,
+        "user_id": user_id,
+        "group_id": group_id,
+        "reply_to": _normalize_payload_value(reply_to) if reply_to else None,
+        "media": _normalize_payload_value(media) if media else [],
         "timestamp": timestamp,
     })
 
 
-async def emit_cycle_start(
+async def emit_message_updated(
     session_id: str,
-    cycle_id: int,
-    round_index: int,
-    max_rounds: int,
-    history_count: int,
+    speaker_name: str,
+    content: str,
+    message_id: str,
+    timestamp: float,
+    source_kind: str = "",
+    *,
+    platform: str = "",
+    user_id: str = "",
+    group_id: str = "",
+    reply_to: Optional[Dict[str, Any]] = None,
+    media: Optional[list[Dict[str, Any]]] = None,
 ) -> None:
-    """广播推理循环开始事件。"""
+    """广播已有消息内容更新事件。"""
 
-    await _broadcast("cycle.start", {
+    await _broadcast("message.updated", {
         "session_id": session_id,
-        "cycle_id": cycle_id,
-        "round_index": round_index,
-        "max_rounds": max_rounds,
-        "history_count": history_count,
-        "timestamp": time.time(),
-    })
-
-
-async def emit_cycle_end(
-    session_id: str,
-    cycle_id: int,
-    time_records: Dict[str, float],
-    agent_state: str,
-    end_reason: str,
-    end_detail: str,
-) -> None:
-    """广播单个推理循环结束事件。"""
-
-    await _broadcast("cycle.end", {
-        "session_id": session_id,
-        "cycle_id": cycle_id,
-        "time_records": _normalize_payload_value(time_records),
-        "agent_state": agent_state,
-        "end_reason": end_reason,
-        "end_detail": end_detail,
-        "timestamp": time.time(),
-    })
-
-
-async def emit_timing_gate_result(
-    session_id: str,
-    cycle_id: int,
-    action: str,
-    content: Optional[str],
-    tool_calls: List[Any],
-    messages: List[Any],
-    prompt_tokens: int,
-    selected_history_count: int,
-    duration_ms: float,
-) -> None:
-    """广播 Timing Gate 结果事件。"""
-
-    await _broadcast("timing_gate.result", {
-        "session_id": session_id,
-        "cycle_id": cycle_id,
-        "action": action,
+        "speaker_name": speaker_name,
         "content": content,
-        "tool_calls": _serialize_tool_calls_from_objects(tool_calls),
-        "messages": _serialize_messages(messages),
-        "prompt_tokens": prompt_tokens,
-        "selected_history_count": selected_history_count,
-        "duration_ms": duration_ms,
-        "timestamp": time.time(),
+        "message_id": message_id,
+        "source_kind": source_kind,
+        "platform": platform,
+        "user_id": user_id,
+        "group_id": group_id,
+        "reply_to": _normalize_payload_value(reply_to) if reply_to else None,
+        "media": _normalize_payload_value(media) if media else [],
+        "timestamp": timestamp,
     })
 
 
@@ -502,27 +558,20 @@ async def emit_planner_finalized(
     *,
     session_id: str,
     cycle_id: int,
-    timing_request_messages: Optional[List[Any]],
-    timing_selected_history_count: Optional[int],
-    timing_tool_count: Optional[int],
-    timing_action: Optional[str],
-    timing_content: Optional[str],
-    timing_tool_calls: Optional[List[Any]],
-    timing_tool_results: Optional[List[str]],
-    timing_prompt_tokens: Optional[int],
-    timing_completion_tokens: Optional[int],
-    timing_total_tokens: Optional[int],
-    timing_duration_ms: Optional[float],
     planner_request_messages: Optional[List[Any]],
     planner_selected_history_count: Optional[int],
     planner_tool_count: Optional[int],
     planner_content: Optional[str],
     planner_tool_calls: Optional[List[Any]],
+    planner_native_tool_calls: Optional[List[Any]],
     planner_prompt_tokens: Optional[int],
     planner_completion_tokens: Optional[int],
     planner_total_tokens: Optional[int],
     planner_duration_ms: Optional[float],
     planner_prompt_html_uri: Optional[str] = None,
+    planner_prompt_cache_hit_tokens: Optional[int] = None,
+    planner_prompt_cache_miss_tokens: Optional[int] = None,
+    planner_context_sections: Optional[List[ContextSectionUsage]] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
     time_records: Optional[Dict[str, float]] = None,
     agent_state: str = "",
@@ -536,32 +585,23 @@ async def emit_planner_finalized(
         "session_id": session_id,
         "cycle_id": cycle_id,
         "timestamp": time.time(),
-        "timing_gate": _serialize_timing_gate_block(
-            request_messages=timing_request_messages,
-            selected_history_count=timing_selected_history_count,
-            tool_count=timing_tool_count,
-            action=timing_action,
-            content=timing_content,
-            tool_calls=timing_tool_calls,
-            tool_results=timing_tool_results,
-            prompt_tokens=timing_prompt_tokens,
-            completion_tokens=timing_completion_tokens,
-            total_tokens=timing_total_tokens,
-            duration_ms=timing_duration_ms,
-        ),
         "request": _serialize_request_block(
             planner_request_messages,
             planner_selected_history_count,
             planner_tool_count,
+            planner_context_sections,
         ),
         "planner": _serialize_planner_block(
             planner_content,
             planner_tool_calls,
+            planner_native_tool_calls,
             planner_prompt_tokens,
             planner_completion_tokens,
             planner_total_tokens,
             planner_duration_ms,
             planner_prompt_html_uri,
+            planner_prompt_cache_hit_tokens,
+            planner_prompt_cache_miss_tokens,
         ),
         "tools": _serialize_tool_results(list(tools or [])),
         "interrupted": planner_interrupted,

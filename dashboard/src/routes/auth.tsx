@@ -11,20 +11,8 @@ import {
   Moon,
   Sun,
   Terminal,
-  Zap,
 } from 'lucide-react'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   Card,
@@ -43,16 +31,61 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { WavesBackground } from '@/components/waves-background'
 import { useTheme } from '@/components/use-theme'
 
-import { useAnimation } from '@/hooks/use-animation'
-
-import { parseResponse } from '@/lib/api-helpers'
-import { checkAuthStatus } from '@/lib/fetch-with-auth'
+import { checkAuthStatus, getSetupStatus } from '@/lib/auth'
+import { authApi } from '@/lib/http'
 import { cn } from '@/lib/utils'
 import { APP_FULL_NAME } from '@/lib/version'
 
+function createGearPath(teeth: number, outerRadius: number, rootRadius: number) {
+  const toothAngle = (Math.PI * 2) / teeth
+  const points = Array.from({ length: teeth }, (_, index) => {
+    const centerAngle = index * toothAngle - Math.PI / 2
+    const rootHalfWidth = toothAngle * 0.5
+    const topHalfWidth = toothAngle * 0.22
+
+    return [
+      { angle: centerAngle - rootHalfWidth, radius: rootRadius },
+      { angle: centerAngle - topHalfWidth, radius: outerRadius },
+      { angle: centerAngle + topHalfWidth, radius: outerRadius },
+      { angle: centerAngle + rootHalfWidth, radius: rootRadius },
+    ]
+  }).flat().map(({ angle, radius }) => ({
+    x: 50 + Math.cos(angle) * radius,
+    y: 50 + Math.sin(angle) * radius,
+  }))
+
+  return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' ') + ' Z'
+}
+
+const AUTH_GEAR_PATH = createGearPath(28, 48, 38)
+
+function AuthRetroGears() {
+  return (
+    <div className="auth-retro-gears" aria-hidden="true">
+      <svg className="auth-retro-gear auth-retro-gear--primary" viewBox="0 0 100 100" focusable="false">
+        <path className="auth-retro-gear__body" d={AUTH_GEAR_PATH} />
+        <circle className="auth-retro-gear__ring" cx="50" cy="50" r="31" />
+        <circle className="auth-retro-gear__ring auth-retro-gear__ring--inner" cx="50" cy="50" r="13" />
+        <circle className="auth-retro-gear__cutout" cx="50" cy="50" r="8" />
+      </svg>
+      <svg className="auth-retro-gear auth-retro-gear--secondary" viewBox="0 0 100 100" focusable="false">
+        <path className="auth-retro-gear__body" d={AUTH_GEAR_PATH} />
+        <circle className="auth-retro-gear__ring" cx="50" cy="50" r="29" />
+        <circle className="auth-retro-gear__ring auth-retro-gear__ring--inner" cx="50" cy="50" r="12" />
+        <circle className="auth-retro-gear__cutout" cx="50" cy="50" r="7" />
+      </svg>
+    </div>
+  )
+}
+
+function resolvePostAuthTarget(): '/' | '/chat/embed' {
+  if (typeof window === 'undefined') return '/'
+  return new URLSearchParams(window.location.search).get('redirect') === '/chat/embed'
+    ? '/chat/embed'
+    : '/'
+}
 
 export function AuthPage() {
   const [token, setToken] = useState('')
@@ -61,10 +94,11 @@ export function AuthPage() {
   const [checkingAuth, setCheckingAuth] = useState(true)
   const navigate = useNavigate()
   const { t } = useTranslation()
-  const { enableWavesBackground, setEnableWavesBackground } = useAnimation()
-  const { theme, setTheme } = useTheme()
+  const { theme, setTheme, themeConfig } = useTheme()
+  const showRetroGears = themeConfig.dashboardStyle === 'future-retro'
   // 避免 React StrictMode 下重复触发 URL token 自动登录。
   const urlTokenHandledRef = useRef(false)
+  const tokenAutofocusedRef = useRef(false)
 
   // 从 URL 中提取 token（支持 query 与 hash 两种位置）。
   // 允许 ?token=xxx 、&token=xxx（query）以及 #/foo?token=xxx、#token=xxx（hash）。
@@ -144,29 +178,17 @@ export function AuthPage() {
 
       setIsValidating(true)
       try {
-        // 向后端发送请求验证 token（后端会设置 HttpOnly Cookie）
-        const response = await fetch('/api/webui/auth/verify', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include', // 确保接收并存储 Cookie
-          body: JSON.stringify({ token: trimmed }),
-        })
-
-        const result = await parseResponse<{
+        // 向后端发送请求验证 token（后端会设置 HttpOnly Cookie）。
+        // 走 authApi：401（token 错误）透传后端信息，不触发整页跳转。
+        const data = await authApi.post<{
           valid: boolean
           is_first_setup?: boolean
+          requires_custom_token?: boolean
           message?: string
-        }>(response)
-
-        if (!result.success) {
-          console.error('Token 验证失败:', result.error)
-          setError(result.error)
-          return false
-        }
-
-        const data = result.data
+        }>('/api/webui/auth/verify', {
+          body: { token: trimmed },
+          errorMessage: t('auth.verifyFailed'),
+        })
 
         if (data.valid) {
           // Token 验证成功，Cookie 已由后端设置
@@ -177,10 +199,10 @@ export function AuthPage() {
           await checkAuthStatus()
 
           // 直接使用验证响应中的 is_first_setup 字段，避免额外请求
-          if (data.is_first_setup) {
+          if (data.requires_custom_token || data.is_first_setup) {
             navigate({ to: '/setup' })
           } else {
-            navigate({ to: '/' })
+            navigate({ to: resolvePostAuthTarget() })
           }
           return true
         }
@@ -212,7 +234,13 @@ export function AuthPage() {
         if (isAuth) {
           // 已登录场景下，URL 中残留的 token 也清掉，避免外泄。
           stripTokenFromUrl()
-          navigate({ to: '/' })
+          const setupStatus = await getSetupStatus()
+          navigate({
+            to:
+              setupStatus?.requires_custom_token || setupStatus?.is_first_setup
+                ? '/setup'
+                : resolvePostAuthTarget(),
+          })
           return
         }
 
@@ -238,22 +266,23 @@ export function AuthPage() {
   // 正在检查认证状态时显示加载
   if (checkingAuth) {
     return (
-      <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
-        {enableWavesBackground && <WavesBackground />}
+      <div data-auth-page="true" className="relative isolate flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
+        {showRetroGears && <AuthRetroGears />}
         <div className="text-muted-foreground">{t('auth.checkingAuth')}</div>
       </div>
     )
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
-      {/* 波浪背景 - 独立控制 */}
-      {enableWavesBackground && <WavesBackground />}
+    <div data-auth-page="true" className="relative isolate flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
+      {showRetroGears && <AuthRetroGears />}
 
       {/* 认证卡片 - 磨砂玻璃效果 */}
       <Card className="relative z-10 w-full max-w-md shadow-2xl backdrop-blur-xl bg-card/80 border-border/50">
         {/* 主题切换按钮 */}
         <button
+          type="button"
+          data-auth-theme-toggle="true"
           onClick={toggleTheme}
           className="absolute right-4 top-4 rounded-lg p-2 hover:bg-accent transition-colors z-10 text-foreground"
           title={actualTheme === 'dark' ? t('auth.switchToLight') : t('auth.switchToDark')}
@@ -296,7 +325,12 @@ export function AuthPage() {
                   onChange={(e) => setToken(e.target.value)}
                   className={cn('pl-10', error && 'border-red-500 focus-visible:ring-red-500')}
                   disabled={isValidating}
-                  autoFocus
+                  ref={(element) => {
+                    if (element && !tokenAutofocusedRef.current) {
+                      tokenAutofocusedRef.current = true
+                      element.focus()
+                    }
+                  }}
                   autoComplete="off"
                   aria-invalid={error ? true : undefined}
                   aria-describedby={error ? 'token-error' : undefined}
@@ -397,45 +431,12 @@ export function AuthPage() {
               </DialogContent>
             </Dialog>
 
-            {/* 性能优化选项 */}
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <button className="w-full text-center text-sm text-muted-foreground hover:text-foreground transition-colors underline-offset-4 hover:underline flex items-center justify-center gap-1">
-                  <Zap className="h-4 w-4" strokeWidth={2} fill="none" />
-                  {t('auth.slowLink')}
-                </button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle className="flex items-center gap-2">
-                    <Zap className="h-5 w-5 text-primary" strokeWidth={2} fill="none" />
-                    {t('auth.disableAnimTitle')}
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {t('auth.disableAnimDesc')}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <div className="rounded-lg border bg-muted/50 p-4 space-y-2">
-                  <p className="text-sm text-muted-foreground">
-                    {t('auth.disableAnimDetail')}
-                  </p>
-                </div>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{t('common.cancel')}</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => setEnableWavesBackground(false)}
-                  >
-                    {t('auth.disableAnimBtn')}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
           </form>
         </CardContent>
       </Card>
 
       {/* 页脚信息 */}
-      <div className="absolute bottom-4 left-0 right-0 text-center text-xs text-muted-foreground">
+      <div className="absolute bottom-4 left-0 right-0 z-10 text-center text-xs text-muted-foreground">
         <p>{APP_FULL_NAME}</p>
       </div>
     </div>

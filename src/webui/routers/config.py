@@ -8,6 +8,8 @@ import copy
 import json
 import os
 import re
+import shutil
+import time
 import types
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -16,7 +18,7 @@ from pydantic import BaseModel, Field
 import tomlkit
 
 from src.common.logger import get_logger
-from src.common.prompt_i18n import clear_prompt_cache, list_prompt_templates
+from src.common.prompt_i18n import clear_prompt_cache, extract_prompt_placeholders, list_prompt_templates
 from src.config.config import CONFIG_DIR, Config, ModelConfig, PROJECT_ROOT, config_manager
 from src.config.config_base import AttributeData, ConfigBase
 from src.config.model_configs import (
@@ -62,14 +64,25 @@ ConfigBody = Annotated[Dict[str, Any], Body()]
 SectionBody = Annotated[Any, Body()]
 RawContentBody = Annotated[str, Body(embed=True)]
 PathBody = Annotated[Dict[str, str], Body()]
-PromptContentBody = Annotated[str, Body(embed=True)]
 
 router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(require_auth)])
+compat_router = APIRouter(prefix="/api/config", tags=["config-compat"], dependencies=[Depends(require_auth)])
 
 PROMPTS_DIR = PROJECT_ROOT / "prompts"
 CUSTOM_PROMPTS_DIR = PROJECT_ROOT / "data" / "custom_prompts"
 MAISAKA_PROMPT_PREVIEW_DIR = (PROJECT_ROOT / "logs" / "maisaka_prompt").resolve()
 _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
+_PROMPT_VERSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+_LEGACY_CUSTOM_PROMPT_VERSION_ID = "legacy-current"
+_MODEL_CONFIG_VERSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+async def _reload_model_config_after_save() -> None:
+    """将刚保存的模型配置同步到运行时。"""
+
+    if await config_manager.reload_config(changed_scopes=["model"]):
+        return
+    raise HTTPException(status_code=500, detail="模型配置已保存，但运行时热重载失败，请检查日志")
 
 
 class PromptFileInfo(BaseModel):
@@ -82,6 +95,27 @@ class PromptFileInfo(BaseModel):
     advanced: bool = Field(default=False, description="是否为高级 Prompt")
     description: str = Field(default="", description="Prompt 描述")
     customized: bool = Field(default=False, description="是否存在用户自定义覆盖")
+    custom_version_count: int = Field(default=0, description="用户自定义版本数量")
+
+
+class PromptValidationResult(BaseModel):
+    """Prompt 参数校验结果。"""
+
+    valid: bool = True
+    missing_placeholders: List[str] = Field(default_factory=list)
+    extra_placeholders: List[str] = Field(default_factory=list)
+    message: str = ""
+
+
+class PromptVersionInfo(BaseModel):
+    """Prompt 自定义版本信息。"""
+
+    id: str
+    label: str
+    created_at: float
+    modified_at: float
+    size: int
+    active: bool = False
 
 
 class PromptCatalogResponse(BaseModel):
@@ -100,6 +134,83 @@ class PromptFileResponse(BaseModel):
     filename: str
     content: str
     customized: bool = False
+    active_version_id: str | None = None
+    versions: List[PromptVersionInfo] = Field(default_factory=list)
+    validation: PromptValidationResult = Field(default_factory=PromptValidationResult)
+
+
+class PromptVersionFileResponse(PromptFileResponse):
+    """Prompt 自定义版本内容响应。"""
+
+    version_id: str
+
+
+class PromptVersionListResponse(BaseModel):
+    """Prompt 自定义版本列表响应。"""
+
+    success: bool = True
+    language: str
+    filename: str
+    active_version_id: str | None = None
+    versions: List[PromptVersionInfo] = Field(default_factory=list)
+
+
+class PromptUpdateRequest(BaseModel):
+    """Prompt 保存请求。"""
+
+    content: str
+    version_id: str | None = None
+    label: str = ""
+    create_version: bool = False
+
+
+class ModelConfigVersionInfo(BaseModel):
+    """模型配置文件副本信息。"""
+
+    id: str
+    label: str
+    created_at: float
+    modified_at: float
+    size: int
+    active: bool = False
+    inner_config_version: str | None = None
+    valid: bool = True
+    error: str | None = None
+
+
+class ModelConfigVersionListResponse(BaseModel):
+    """模型配置文件副本列表响应。"""
+
+    success: bool = True
+    active_version: ModelConfigVersionInfo
+    versions: List[ModelConfigVersionInfo] = Field(default_factory=list)
+
+
+class ModelConfigVersionCreateRequest(BaseModel):
+    """模型配置文件副本创建请求。"""
+
+    label: str = Field(default="", max_length=80, description="副本展示名称")
+
+
+class ModelConfigVersionUpdateRequest(BaseModel):
+    """模型配置文件副本更新请求。"""
+
+    label: str = Field(..., min_length=1, max_length=80, description="副本展示名称")
+
+
+class ModelConfigVersionSwitchRequest(BaseModel):
+    """模型配置文件副本切换请求。"""
+
+    archive_current: bool = Field(default=True, description="切换前是否归档当前启用配置")
+    archive_label: str = Field(default="", max_length=80, description="当前配置归档副本名")
+
+
+class ModelConfigVersionResponse(BaseModel):
+    """单个模型配置文件副本操作响应。"""
+
+    success: bool = True
+    version: ModelConfigVersionInfo
+    message: str = ""
 
 
 class PromptGeneratorChatPrompt(BaseModel):
@@ -115,11 +226,15 @@ class PromptGeneratorParsedResult(BaseModel):
     """LLM 生成的 MaiBot 人设配置结构。"""
 
     personality: str = Field(default="", description="对应 [personality].personality")
+    behavior_style: str = Field(default="", description="对应 [personality].behavior_style")
     reply_style: str = Field(default="", description="对应 [personality].reply_style")
     multiple_reply_style: List[str] = Field(default_factory=list, description="对应 multiple_reply_style")
-    group_chat_prompt: str = Field(default="", description="对应 [chat].group_chat_prompt")
-    private_chat_prompts: str = Field(default="", description="对应 [chat].private_chat_prompts")
-    chat_prompts: List[PromptGeneratorChatPrompt] = Field(default_factory=list, description="对应 [[chat.chat_prompts]]")
+    group_chat_prompt: str = Field(default="", description="对应 [chat.reply_style].group_chat_prompt")
+    private_chat_prompts: str = Field(default="", description="对应 [chat.reply_style].private_chat_prompts")
+    chat_prompts: List[PromptGeneratorChatPrompt] = Field(
+        default_factory=list,
+        description="对应 [[chat.reply_style.chat_prompts]]",
+    )
     notes: List[str] = Field(default_factory=list, description="生成说明或人工检查建议")
 
 
@@ -243,8 +358,498 @@ def _safe_custom_prompt_path(language: str, filename: str) -> Path:
     return prompt_path
 
 
+def _safe_prompt_version_id(version_id: str) -> str:
+    """校验 Prompt 自定义版本 ID。"""
+
+    normalized_version_id = version_id.strip()
+    if (
+        not normalized_version_id
+        or normalized_version_id in {".", ".."}
+        or not _PROMPT_VERSION_ID_PATTERN.fullmatch(normalized_version_id)
+    ):
+        raise HTTPException(status_code=400, detail="无效的 Prompt 版本 ID")
+    return normalized_version_id
+
+
+def _safe_custom_prompt_versions_dir(language: str, filename: str) -> Path:
+    """解析指定 Prompt 的自定义版本目录。"""
+
+    custom_prompt_path = _safe_custom_prompt_path(language, filename)
+    versions_dir = custom_prompt_path.parent / ".versions" / custom_prompt_path.stem
+    custom_prompts_root = CUSTOM_PROMPTS_DIR.resolve()
+    resolved_versions_dir = versions_dir.resolve()
+    try:
+        resolved_versions_dir.relative_to(custom_prompts_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Prompt 版本路径越界") from exc
+    return resolved_versions_dir
+
+
+def _prompt_version_manifest_path(language: str, filename: str) -> Path:
+    return _safe_custom_prompt_versions_dir(language, filename) / "manifest.json"
+
+
+def _prompt_version_file_path(language: str, filename: str, version_id: str) -> Path:
+    normalized_version_id = _safe_prompt_version_id(version_id)
+    version_path = _safe_custom_prompt_versions_dir(language, filename) / f"{normalized_version_id}.prompt"
+    versions_dir = _safe_custom_prompt_versions_dir(language, filename).resolve()
+    resolved_version_path = version_path.resolve()
+    try:
+        resolved_version_path.relative_to(versions_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Prompt 版本路径越界") from exc
+    return resolved_version_path
+
+
+def _read_prompt_version_manifest(language: str, filename: str) -> Dict[str, Any]:
+    manifest_path = _prompt_version_manifest_path(language, filename)
+    if not manifest_path.exists():
+        return {"active_version_id": None, "versions": []}
+
+    try:
+        raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Prompt 版本清单损坏: {manifest_path}") from exc
+
+    if not isinstance(raw_manifest, dict):
+        raise HTTPException(status_code=500, detail=f"Prompt 版本清单格式错误: {manifest_path}")
+
+    versions = raw_manifest.get("versions", [])
+    if not isinstance(versions, list):
+        versions = []
+
+    return {
+        "active_version_id": raw_manifest.get("active_version_id")
+        if isinstance(raw_manifest.get("active_version_id"), str)
+        else None,
+        "versions": [version for version in versions if isinstance(version, dict)],
+    }
+
+
+def _write_prompt_version_manifest(language: str, filename: str, manifest: Dict[str, Any]) -> None:
+    manifest_path = _prompt_version_manifest_path(language, filename)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+
+
+def _active_model_config_path() -> Path:
+    """返回当前启用的模型配置文件路径。"""
+
+    return (Path(CONFIG_DIR) / "model_config.toml").resolve()
+
+
+def _model_config_versions_dir() -> Path:
+    """返回模型配置文件副本目录。"""
+
+    return (Path(CONFIG_DIR) / "versions" / "model").resolve()
+
+
+def _model_config_version_manifest_path() -> Path:
+    return _model_config_versions_dir() / "manifest.json"
+
+
+def _safe_model_config_version_id(version_id: str) -> str:
+    """校验模型配置文件副本 ID，避免目录穿越。"""
+
+    normalized_version_id = version_id.strip()
+    if (
+        not normalized_version_id
+        or normalized_version_id in {".", "..", "active"}
+        or not _MODEL_CONFIG_VERSION_ID_PATTERN.fullmatch(normalized_version_id)
+    ):
+        raise HTTPException(status_code=400, detail="无效的模型配置副本 ID")
+    return normalized_version_id
+
+
+def _model_config_version_path(version_id: str) -> Path:
+    normalized_version_id = _safe_model_config_version_id(version_id)
+    versions_dir = _model_config_versions_dir()
+    version_path = (versions_dir / f"{normalized_version_id}.toml").resolve()
+    try:
+        version_path.relative_to(versions_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="模型配置副本路径越界") from exc
+    return version_path
+
+
+def _read_model_version_manifest() -> Dict[str, Any]:
+    manifest_path = _model_config_version_manifest_path()
+    if not manifest_path.exists():
+        return {"active_label": "默认配置", "versions": []}
+
+    try:
+        raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"模型配置副本清单损坏: {manifest_path}") from exc
+
+    if not isinstance(raw_manifest, dict):
+        raise HTTPException(status_code=500, detail=f"模型配置副本清单格式错误: {manifest_path}")
+
+    versions = raw_manifest.get("versions", [])
+    if not isinstance(versions, list):
+        versions = []
+
+    active_label = raw_manifest.get("active_label")
+    return {
+        "active_label": active_label.strip() if isinstance(active_label, str) and active_label.strip() else "默认配置",
+        "versions": [version for version in versions if isinstance(version, dict)],
+    }
+
+
+def _write_model_version_manifest(manifest: Dict[str, Any]) -> None:
+    manifest_path = _model_config_version_manifest_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if not isinstance(manifest.get("active_label"), str) or not manifest["active_label"].strip():
+        manifest["active_label"] = "默认配置"
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
+
+
+def _get_active_model_config_label() -> str:
+    manifest = _read_model_version_manifest()
+    active_label = manifest.get("active_label")
+    return active_label.strip() if isinstance(active_label, str) and active_label.strip() else "默认配置"
+
+
+def _set_active_model_config_label(label: str) -> None:
+    manifest = _read_model_version_manifest()
+    manifest["active_label"] = label.strip() or "默认配置"
+    _write_model_version_manifest(manifest)
+
+
+def _model_version_metadata_by_id() -> Dict[str, Dict[str, Any]]:
+    return {
+        str(version.get("id")): version
+        for version in _read_model_version_manifest().get("versions", [])
+        if isinstance(version.get("id"), str)
+    }
+
+
+def _upsert_model_version_metadata(version_id: str, label: str, created_at: float | None = None) -> None:
+    manifest = _read_model_version_manifest()
+    versions = manifest.get("versions", [])
+    now = time.time()
+    normalized_label = label.strip() or _default_model_config_version_label()
+    found = False
+
+    for version in versions:
+        if version.get("id") != version_id:
+            continue
+        version["label"] = normalized_label
+        version["created_at"] = float(version.get("created_at") or created_at or now)
+        found = True
+        break
+
+    if not found:
+        versions.append(
+            {
+                "id": version_id,
+                "label": normalized_label,
+                "created_at": float(created_at or now),
+            }
+        )
+
+    manifest["versions"] = versions
+    _write_model_version_manifest(manifest)
+
+
+def _remove_model_version_metadata(version_id: str) -> None:
+    manifest = _read_model_version_manifest()
+    manifest["versions"] = [
+        version for version in manifest.get("versions", []) if version.get("id") != version_id
+    ]
+    _write_model_version_manifest(manifest)
+
+
+def _create_model_config_version_id() -> str:
+    base_version_id = time.strftime("v%Y%m%d%H%M%S")
+    version_id = base_version_id
+    suffix = 2
+    while _model_config_version_path(version_id).exists():
+        version_id = f"{base_version_id}-{suffix}"
+        suffix += 1
+    return version_id
+
+
+def _default_model_config_version_label() -> str:
+    return f"模型配置副本 {time.strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+def _default_model_config_archive_label() -> str:
+    return _get_active_model_config_label()
+
+
+def _read_model_config_version_inner_version(config_path: Path) -> str | None:
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            config_data = tomlkit.load(handle)
+    except Exception:
+        return None
+
+    inner_table = config_data.get("inner")
+    if not isinstance(inner_table, dict):
+        return None
+    inner_version = inner_table.get("version")
+    return inner_version if isinstance(inner_version, str) else None
+
+
+def _validate_model_config_file(config_path: Path) -> None:
+    """校验指定 TOML 文件可作为模型配置加载。"""
+
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            config_data = tomlkit.load(handle)
+        plain_config_data = _coerce_config_numeric_values(_toml_to_plain_dict(config_data), ModelConfig)
+        ModelConfig.from_dict(AttributeData(), copy.deepcopy(plain_config_data))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"模型配置副本无效: {str(exc)}") from exc
+
+
+def _build_model_config_version_info(
+    *,
+    version_id: str,
+    label: str,
+    config_path: Path,
+    created_at: float | None = None,
+    active: bool = False,
+) -> ModelConfigVersionInfo:
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="模型配置副本文件不存在")
+
+    stat = config_path.stat()
+    valid = True
+    error: str | None = None
+    try:
+        _validate_model_config_file(config_path)
+    except HTTPException as exc:
+        valid = False
+        error = str(exc.detail)
+
+    return ModelConfigVersionInfo(
+        id=version_id,
+        label=label,
+        created_at=float(created_at or stat.st_mtime),
+        modified_at=stat.st_mtime,
+        size=stat.st_size,
+        active=active,
+        inner_config_version=_read_model_config_version_inner_version(config_path),
+        valid=valid,
+        error=error,
+    )
+
+
+def _list_model_config_versions() -> List[ModelConfigVersionInfo]:
+    versions_dir = _model_config_versions_dir()
+    metadata_by_id = _model_version_metadata_by_id()
+    if not versions_dir.exists():
+        return []
+
+    versions: List[ModelConfigVersionInfo] = []
+    for version_path in sorted(versions_dir.glob("*.toml"), key=lambda path: path.stat().st_mtime, reverse=True):
+        version_id = version_path.stem
+        metadata = metadata_by_id.get(version_id, {})
+        versions.append(
+            _build_model_config_version_info(
+                version_id=version_id,
+                label=str(metadata.get("label") or version_id),
+                config_path=version_path,
+                created_at=metadata.get("created_at") if isinstance(metadata.get("created_at"), (int, float)) else None,
+            )
+        )
+
+    return versions
+
+
+def _copy_model_config_to_version(source_path: Path, label: str) -> ModelConfigVersionInfo:
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="当前模型配置文件不存在")
+
+    _validate_model_config_file(source_path)
+    versions_dir = _model_config_versions_dir()
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    version_id = _create_model_config_version_id()
+    version_path = _model_config_version_path(version_id)
+    shutil.copy2(source_path, version_path)
+    created_at = time.time()
+    _upsert_model_version_metadata(version_id, label, created_at)
+    return _build_model_config_version_info(
+        version_id=version_id,
+        label=label.strip() or _default_model_config_version_label(),
+        config_path=version_path,
+        created_at=created_at,
+    )
+
+
+def _create_prompt_version_id(language: str, filename: str) -> str:
+    base_version_id = time.strftime("v%Y%m%d%H%M%S")
+    version_id = base_version_id
+    suffix = 2
+    while _prompt_version_file_path(language, filename, version_id).exists():
+        version_id = f"{base_version_id}-{suffix}"
+        suffix += 1
+    return version_id
+
+
+def _default_prompt_version_label(filename: str) -> str:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    prompt_name = filename.removesuffix(".prompt")
+    return f"{prompt_name} 自定义版本 {timestamp}"
+
+
+def _normalize_prompt_version_label(filename: str, label: str) -> str:
+    normalized_label = label.strip()
+    return normalized_label or _default_prompt_version_label(filename)
+
+
+def _build_prompt_validation(default_content: str, custom_content: str) -> PromptValidationResult:
+    try:
+        default_placeholders = extract_prompt_placeholders(default_content)
+        custom_placeholders = extract_prompt_placeholders(custom_content)
+    except ValueError as exc:
+        return PromptValidationResult(valid=False, message=f"Prompt 参数格式错误: {exc}")
+
+    missing_placeholders = sorted(default_placeholders - custom_placeholders)
+    extra_placeholders = sorted(custom_placeholders - default_placeholders)
+    if not missing_placeholders and not extra_placeholders:
+        return PromptValidationResult()
+
+    message_parts: List[str] = []
+    if missing_placeholders:
+        message_parts.append(f"缺少参数: {', '.join(missing_placeholders)}")
+    if extra_placeholders:
+        message_parts.append(f"多余参数: {', '.join(extra_placeholders)}")
+    return PromptValidationResult(
+        valid=False,
+        missing_placeholders=missing_placeholders,
+        extra_placeholders=extra_placeholders,
+        message="自定义 Prompt 参数必须与默认 Prompt 完全一致，" + "；".join(message_parts),
+    )
+
+
+def _ensure_prompt_parameters_match(prompt_path: Path, custom_content: str) -> PromptValidationResult:
+    default_content = prompt_path.read_text(encoding="utf-8")
+    validation = _build_prompt_validation(default_content, custom_content)
+    if not validation.valid:
+        raise HTTPException(status_code=400, detail=validation.message)
+    return validation
+
+
+def _list_prompt_versions(language: str, filename: str) -> List[PromptVersionInfo]:
+    manifest = _read_prompt_version_manifest(language, filename)
+    active_version_id = manifest.get("active_version_id")
+    versions: List[PromptVersionInfo] = []
+    for raw_version in manifest["versions"]:
+        version_id = raw_version.get("id")
+        if not isinstance(version_id, str):
+            continue
+        version_path = _prompt_version_file_path(language, filename, version_id)
+        if not version_path.exists():
+            continue
+        stat = version_path.stat()
+        versions.append(
+            PromptVersionInfo(
+                id=version_id,
+                label=raw_version.get("label") if isinstance(raw_version.get("label"), str) else version_id,
+                created_at=float(raw_version.get("created_at") or stat.st_ctime),
+                modified_at=stat.st_mtime,
+                size=stat.st_size,
+                active=version_id == active_version_id,
+            )
+        )
+
+    custom_prompt_path = _safe_custom_prompt_path(language, filename)
+    if custom_prompt_path.exists() and not active_version_id and not versions:
+        stat = custom_prompt_path.stat()
+        versions.append(
+            PromptVersionInfo(
+                id=_LEGACY_CUSTOM_PROMPT_VERSION_ID,
+                label="当前自定义（旧格式）",
+                created_at=stat.st_ctime,
+                modified_at=stat.st_mtime,
+                size=stat.st_size,
+                active=True,
+            )
+        )
+    return sorted(versions, key=lambda version: version.modified_at, reverse=True)
+
+
+def _get_active_prompt_version_id(language: str, filename: str) -> str | None:
+    manifest = _read_prompt_version_manifest(language, filename)
+    active_version_id = manifest.get("active_version_id")
+    if isinstance(active_version_id, str):
+        return active_version_id
+    if _safe_custom_prompt_path(language, filename).exists():
+        return _LEGACY_CUSTOM_PROMPT_VERSION_ID
+    return None
+
+
+def _save_prompt_version(
+    language: str,
+    filename: str,
+    content: str,
+    version_id: str | None,
+    label: str,
+    create_version: bool,
+) -> str:
+    manifest = _read_prompt_version_manifest(language, filename)
+    versions = manifest["versions"]
+    existing_version_ids = {
+        raw_version["id"] for raw_version in versions if isinstance(raw_version.get("id"), str)
+    }
+
+    normalized_version_id = version_id.strip() if isinstance(version_id, str) else ""
+    if normalized_version_id:
+        _safe_prompt_version_id(normalized_version_id)
+    if (
+        normalized_version_id
+        and not create_version
+        and normalized_version_id != _LEGACY_CUSTOM_PROMPT_VERSION_ID
+        and normalized_version_id not in existing_version_ids
+    ):
+        raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+
+    should_create_version = (
+        create_version
+        or not normalized_version_id
+        or normalized_version_id == _LEGACY_CUSTOM_PROMPT_VERSION_ID
+    )
+    if should_create_version:
+        normalized_version_id = _create_prompt_version_id(language, filename)
+        now = time.time()
+        versions.append(
+            {
+                "id": normalized_version_id,
+                "label": _normalize_prompt_version_label(filename, label),
+                "created_at": now,
+            }
+        )
+    version_path = _prompt_version_file_path(language, filename, normalized_version_id)
+    version_path.parent.mkdir(parents=True, exist_ok=True)
+    version_path.write_text(content, encoding="utf-8", newline="\n")
+
+    for raw_version in versions:
+        if raw_version.get("id") != normalized_version_id:
+            continue
+        raw_version["label"] = _normalize_prompt_version_label(
+            filename,
+            label if label.strip() else str(raw_version.get("label") or ""),
+        )
+        raw_version["modified_at"] = time.time()
+        break
+
+    manifest["active_version_id"] = normalized_version_id
+    manifest["versions"] = versions
+    _write_prompt_version_manifest(language, filename, manifest)
+    return normalized_version_id
+
+
+def _set_active_prompt_version(language: str, filename: str, version_id: str | None) -> None:
+    manifest = _read_prompt_version_manifest(language, filename)
+    manifest["active_version_id"] = version_id
+    _write_prompt_version_manifest(language, filename, manifest)
+
+
 def _safe_maisaka_prompt_preview_path(relative_path: str) -> Path:
-    """校验并解析 MaiSaka Prompt HTML 预览路径。"""
+    """校验并解析 MaiSaka Prompt 预览路径。"""
 
     normalized_path = relative_path.strip().replace("\\", "/")
     if not normalized_path or normalized_path.startswith("/") or ".." in Path(normalized_path).parts:
@@ -256,8 +861,8 @@ def _safe_maisaka_prompt_preview_path(relative_path: str) -> Path:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Prompt 预览路径越界") from exc
 
-    if preview_path.suffix.lower() != ".html":
-        raise HTTPException(status_code=400, detail="只允许打开 HTML Prompt 预览")
+    if preview_path.suffix.lower() not in {".html", ".json", ".txt"}:
+        raise HTTPException(status_code=400, detail="只允许打开 Prompt 预览文件")
     return preview_path
 
 
@@ -389,6 +994,10 @@ def _ensure_prompt_generator_model_exists(model_name: str) -> None:
 
 _PROMPT_GENERATOR_REFERENCE_CONFIG: Dict[str, Any] = {
     "personality": "是一个大二女大学生，现在正在上网和群友聊天。包容且善良",
+    "behavior_style": (
+        "先观察聊天上下文和他人的反应，再决定是否参与。只在被提及、对话题感兴趣或确实能推进聊天时行动，"
+        "不需要回应每条消息；不适合参与时保持安静。"
+    ),
     "reply_style": (
         "你的风格平淡简短。可以参考贴吧，知乎的回复风格。不浮夸不过分修辞，不使用复杂句。"
         "只回复简短的内容就好。\n"
@@ -426,6 +1035,7 @@ def _build_prompt_generator_reference_config() -> str:
     lines = [
         "[personality]",
         f"personality = {_toml_string(_PROMPT_GENERATOR_REFERENCE_CONFIG['personality'])}",
+        f"behavior_style = {_toml_string(_PROMPT_GENERATOR_REFERENCE_CONFIG['behavior_style'])}",
         f"reply_style = {_toml_string(_PROMPT_GENERATOR_REFERENCE_CONFIG['reply_style'])}",
         "multiple_reply_style = [",
     ]
@@ -434,7 +1044,7 @@ def _build_prompt_generator_reference_config() -> str:
         [
             "]",
             "",
-            "[chat]",
+            "[chat.reply_style]",
             f"group_chat_prompt = {_toml_string(_PROMPT_GENERATOR_REFERENCE_CONFIG['group_chat_prompt'])}",
             f"private_chat_prompts = {_toml_string(_PROMPT_GENERATOR_REFERENCE_CONFIG['private_chat_prompts'])}",
         ]
@@ -464,10 +1074,11 @@ def _build_prompt_generator_instruction(request: PromptGeneratorRequest) -> str:
 必须只输出一个 JSON 对象，不要 Markdown，不要代码块，不要额外解释。JSON 结构如下：
 {{
   "personality": "对应 [personality].personality。使用第二人称描述稳定人格、身份和长期特质，建议 80-220 字，不要写成小说设定。",
+  "behavior_style": "对应 [personality].behavior_style。只描述何时参与、如何观察局面、如何选择动作以及何时保持安静，不要规定具体说法。",
   "reply_style": "对应 [personality].reply_style。描述麦麦说话方式、回复长度、语气、互动习惯和禁用表达。",
   "multiple_reply_style": ["可选备用表达风格，每项一段，最多 5 项"],
-  "group_chat_prompt": "对应 [chat].group_chat_prompt。只写群聊场景规则，不要重复人格设定。",
-  "private_chat_prompts": "对应 [chat].private_chat_prompts。只写私聊场景规则，不要重复人格设定。",
+  "group_chat_prompt": "对应 [chat.reply_style].group_chat_prompt。只写群聊场景规则，不要重复人格设定。",
+  "private_chat_prompts": "对应 [chat.reply_style].private_chat_prompts。只写私聊场景规则，不要重复人格设定。",
   "chat_prompts": [
     {{"platform": "", "item_id": "", "rule_type": "group", "prompt": "如果原文明确提到某个平台或群/私聊专属规则，才生成此项；否则返回空数组"}}
   ],
@@ -476,11 +1087,12 @@ def _build_prompt_generator_instruction(request: PromptGeneratorRequest) -> str:
 
 生成要求：
 1. 输出要适合聊天型 bot，像真实聊天参与者，不要像客服、旁白、小说角色卡或系统公告。
-2. personality 放稳定身份与人格；reply_style 放表达风格和边界；chat prompt 放聊天场景规则。不要三处重复同一段话。
-3. 除非特别提到，reply_style 和 multiple_reply_style 最好不要是特别具体的句式，而是描述性的风格要求，方便覆盖不同话题和场景的回复。
-4. 默认回复应日常、自然、不过度展开；可以保留原文中的鲜明风格，但要改成可维护的配置文字。
-5. 如果信息不足，请根据原文谨慎补全通用聊天规则，并在 notes 中说明需要人工确认，不要反问用户。
-6. 字段值必须都是字符串、字符串数组或对象数组，不能为 null。
+2. personality 放稳定身份与人格；behavior_style 放行动决策偏好；reply_style 放表达风格和边界；chat prompt 放聊天场景规则。不要重复同一段话。
+3. behavior_style 供 Planner 决定是否参与和采取什么动作，不要写具体措辞、口癖或回复文案。
+4. 除非特别提到，reply_style 和 multiple_reply_style 最好不要是特别具体的句式，而是描述性的风格要求，方便覆盖不同话题和场景的回复。
+5. 默认回复应日常、自然、不过度展开；可以保留原文中的鲜明风格，但要改成可维护的配置文字。
+6. 如果信息不足，请根据原文谨慎补全通用聊天规则，并在 notes 中说明需要人工确认，不要反问用户。
+7. 字段值必须都是字符串、字符串数组或对象数组，不能为 null。
 
 额外要求：
 {request.extra_requirements.strip() or "无"}
@@ -569,6 +1181,7 @@ def _normalize_prompt_generator_result(raw_data: Dict[str, Any]) -> PromptGenera
 
     return PromptGeneratorParsedResult(
         personality=_coerce_prompt_generator_string(raw_data.get("personality")),
+        behavior_style=_coerce_prompt_generator_string(raw_data.get("behavior_style")),
         reply_style=_coerce_prompt_generator_string(raw_data.get("reply_style")),
         multiple_reply_style=_coerce_prompt_generator_string_list(raw_data.get("multiple_reply_style"), max_items=5),
         group_chat_prompt=_coerce_prompt_generator_string(raw_data.get("group_chat_prompt")),
@@ -590,6 +1203,7 @@ def _build_prompt_generator_toml(result: PromptGeneratorParsedResult) -> str:
     lines = [
         "[personality]",
         f"personality = {_toml_string(result.personality)}",
+        f"behavior_style = {_toml_string(result.behavior_style)}",
         f"reply_style = {_toml_string(result.reply_style)}",
         "multiple_reply_style = [",
     ]
@@ -612,7 +1226,7 @@ def _build_prompt_generator_toml(result: PromptGeneratorParsedResult) -> str:
         lines.extend(
             [
                 "",
-                "[[chat.chat_prompts]]",
+                "[[chat.reply_style.chat_prompts]]",
                 f"platform = {_toml_string(chat_prompt.platform)}",
                 f"item_id = {_toml_string(chat_prompt.item_id)}",
                 f"rule_type = {_toml_string(chat_prompt.rule_type)}",
@@ -644,7 +1258,7 @@ def _build_prompt_generator_block_toml(section: str, field: str, value: Any) -> 
                 continue
             lines.extend(
                 [
-                    "[[chat.chat_prompts]]",
+                    "[[chat.reply_style.chat_prompts]]",
                     f"platform = {_toml_string(_coerce_prompt_generator_string(item.get('platform')))}",
                     f"item_id = {_toml_string(_coerce_prompt_generator_string(item.get('item_id')))}",
                     f"rule_type = {_toml_string(_coerce_prompt_generator_string(item.get('rule_type')) or 'group')}",
@@ -698,6 +1312,14 @@ def _build_prompt_generator_config_blocks(result: PromptGeneratorParsedResult) -
         result.personality,
     )
     add_block(
+        "personality.behavior_style",
+        "personality",
+        "behavior_style",
+        "行为风格",
+        "写入 bot_config.toml 的 [personality].behavior_style，会覆盖 Planner 使用的行为风格字段。",
+        result.behavior_style,
+    )
+    add_block(
         "personality.reply_style",
         "personality",
         "reply_style",
@@ -716,29 +1338,29 @@ def _build_prompt_generator_config_blocks(result: PromptGeneratorParsedResult) -
         )
     if result.group_chat_prompt:
         add_block(
-            "chat.group_chat_prompt",
-            "chat",
+            "chat.reply_style.group_chat_prompt",
+            "chat.reply_style",
             "group_chat_prompt",
             "群聊提示词",
-            "写入 bot_config.toml 的 [chat].group_chat_prompt，会覆盖当前群聊提示词。",
+            "写入 bot_config.toml 的 [chat.reply_style].group_chat_prompt，会覆盖当前群聊提示词。",
             result.group_chat_prompt,
         )
     if result.private_chat_prompts:
         add_block(
-            "chat.private_chat_prompts",
-            "chat",
+            "chat.reply_style.private_chat_prompts",
+            "chat.reply_style",
             "private_chat_prompts",
             "私聊提示词",
-            "写入 bot_config.toml 的 [chat].private_chat_prompts，会覆盖当前私聊提示词。",
+            "写入 bot_config.toml 的 [chat.reply_style].private_chat_prompts，会覆盖当前私聊提示词。",
             result.private_chat_prompts,
         )
     if result.chat_prompts:
         add_block(
-            "chat.chat_prompts",
-            "chat",
+            "chat.reply_style.chat_prompts",
+            "chat.reply_style",
             "chat_prompts",
             "额外聊天流 Prompt",
-            "写入 bot_config.toml 的 [[chat.chat_prompts]]，会替换当前额外 Prompt 列表。",
+            "写入 bot_config.toml 的 [[chat.reply_style.chat_prompts]]，会替换当前额外 Prompt 列表。",
             [_prompt_generator_chat_prompt_to_dict(item) for item in result.chat_prompts],
         )
 
@@ -747,11 +1369,12 @@ def _build_prompt_generator_config_blocks(result: PromptGeneratorParsedResult) -
 
 _PROMPT_GENERATOR_ALLOWED_BLOCK_FIELDS = {
     ("personality", "personality"),
+    ("personality", "behavior_style"),
     ("personality", "reply_style"),
     ("personality", "multiple_reply_style"),
-    ("chat", "group_chat_prompt"),
-    ("chat", "private_chat_prompts"),
-    ("chat", "chat_prompts"),
+    ("chat.reply_style", "group_chat_prompt"),
+    ("chat.reply_style", "private_chat_prompts"),
+    ("chat.reply_style", "chat_prompts"),
 }
 
 
@@ -763,7 +1386,7 @@ def _normalize_prompt_generator_block_value(block: PromptGeneratorConfigBlock) -
     if (section, field) not in _PROMPT_GENERATOR_ALLOWED_BLOCK_FIELDS:
         raise HTTPException(status_code=400, detail=f"不允许写入配置字段: {section}.{field}")
 
-    if field in {"personality", "reply_style", "group_chat_prompt", "private_chat_prompts"}:
+    if field in {"personality", "behavior_style", "reply_style", "group_chat_prompt", "private_chat_prompts"}:
         value = _coerce_prompt_generator_string(block.value)
         if not value:
             raise HTTPException(status_code=400, detail=f"配置块 {section}.{field} 不能为空")
@@ -804,6 +1427,20 @@ def _normalize_prompt_generator_block_value(block: PromptGeneratorConfigBlock) -
     raise HTTPException(status_code=400, detail=f"无法识别配置字段: {section}.{field}")
 
 
+def _resolve_prompt_generator_section(config_data: Dict[str, Any], section: str) -> Dict[str, Any]:
+    """按点分配置节定位可写入的 TOML 表。"""
+
+    current: Any = config_data
+    for section_part in section.split("."):
+        if not isinstance(current, dict) or section_part not in current:
+            raise HTTPException(status_code=404, detail=f"配置节 '{section}' 不存在")
+        current = current[section_part]
+
+    if not isinstance(current, dict):
+        raise HTTPException(status_code=400, detail=f"配置节 '{section}' 不是可写对象")
+    return current
+
+
 def _apply_prompt_generator_config_blocks(blocks: List[PromptGeneratorConfigBlock]) -> PromptGeneratorApplyResponse:
     """把选中的人设生成器配置块写入 bot_config.toml。"""
 
@@ -823,11 +1460,7 @@ def _apply_prompt_generator_config_blocks(blocks: List[PromptGeneratorConfigBloc
         section_updates.setdefault(section, {})[field] = value
 
     for section, section_data in section_updates.items():
-        if section not in config_data:
-            raise HTTPException(status_code=404, detail=f"配置节 '{section}' 不存在")
-        if not isinstance(config_data[section], dict):
-            raise HTTPException(status_code=400, detail=f"配置节 '{section}' 不是可写对象")
-        _update_toml_doc(config_data[section], section_data)
+        _update_toml_doc(_resolve_prompt_generator_section(config_data, section), section_data)
 
     try:
         plain_config_data = _coerce_config_numeric_values(_toml_to_plain_dict(config_data), Config)
@@ -849,7 +1482,7 @@ def _apply_prompt_generator_config_blocks(blocks: List[PromptGeneratorConfigBloc
 
 
 @router.get("/prompts", response_model=PromptCatalogResponse)
-async def list_prompt_files():
+def list_prompt_files():
     """列出 prompts 目录下的语言和 Prompt 文件。"""
 
     try:
@@ -871,6 +1504,7 @@ async def list_prompt_files():
                 stat = effective_prompt_file.stat()
                 template_info = prompt_template_infos.get(prompt_file.stem)
                 metadata = template_info.metadata if template_info and template_info.path == prompt_file else None
+                versions = _list_prompt_versions(language, prompt_file.name)
                 prompt_files.append(
                     PromptFileInfo(
                         name=prompt_file.name,
@@ -880,6 +1514,7 @@ async def list_prompt_files():
                         advanced=metadata.advanced if metadata else False,
                         description=metadata.description if metadata else "",
                         customized=custom_prompt_file.exists(),
+                        custom_version_count=len(versions),
                     )
                 )
 
@@ -895,7 +1530,7 @@ async def list_prompt_files():
 
 
 @router.get("/prompts/{language}/{filename}", response_model=PromptFileResponse)
-async def get_prompt_file(language: str, filename: str):
+def get_prompt_file(language: str, filename: str):
     """读取指定语言下的 Prompt 文件内容。"""
 
     prompt_path = _safe_prompt_path(language, filename)
@@ -906,19 +1541,28 @@ async def get_prompt_file(language: str, filename: str):
     try:
         effective_prompt_path = custom_prompt_path if custom_prompt_path.exists() else prompt_path
         content = effective_prompt_path.read_text(encoding="utf-8")
+        default_content = prompt_path.read_text(encoding="utf-8")
+        validation = (
+            _build_prompt_validation(default_content, content) if custom_prompt_path.exists() else PromptValidationResult()
+        )
         return PromptFileResponse(
             language=language,
             filename=filename,
             content=content,
             customized=custom_prompt_path.exists(),
+            active_version_id=_get_active_prompt_version_id(language, filename),
+            versions=_list_prompt_versions(language, filename),
+            validation=validation,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"读取 Prompt 文件失败: {prompt_path} {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"读取 Prompt 文件失败: {str(e)}") from e
 
 
 @router.get("/prompts/{language}/{filename}/default", response_model=PromptFileResponse)
-async def get_default_prompt_file(language: str, filename: str):
+def get_default_prompt_file(language: str, filename: str):
     """只读获取内置 Prompt 模板内容，不读取或修改用户自定义覆盖。"""
 
     prompt_path = _safe_prompt_path(language, filename)
@@ -927,14 +1571,170 @@ async def get_default_prompt_file(language: str, filename: str):
 
     try:
         content = prompt_path.read_text(encoding="utf-8")
-        return PromptFileResponse(language=language, filename=filename, content=content, customized=False)
+        return PromptFileResponse(
+            language=language,
+            filename=filename,
+            content=content,
+            customized=False,
+            active_version_id=_get_active_prompt_version_id(language, filename),
+            versions=_list_prompt_versions(language, filename),
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"读取默认 Prompt 文件失败: {prompt_path} {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"读取默认 Prompt 文件失败: {str(e)}") from e
 
 
+@router.get("/prompts/{language}/{filename}/versions", response_model=PromptVersionListResponse)
+def list_prompt_versions(language: str, filename: str):
+    """列出指定 Prompt 的自定义版本。"""
+
+    prompt_path = _safe_prompt_path(language, filename)
+    if not prompt_path.exists() or not prompt_path.is_file():
+        raise HTTPException(status_code=404, detail="Prompt 文件不存在")
+
+    return PromptVersionListResponse(
+        language=language,
+        filename=filename,
+        active_version_id=_get_active_prompt_version_id(language, filename),
+        versions=_list_prompt_versions(language, filename),
+    )
+
+
+@router.get("/prompts/{language}/{filename}/versions/{version_id}", response_model=PromptVersionFileResponse)
+def get_prompt_version_file(language: str, filename: str, version_id: str):
+    """读取指定 Prompt 自定义版本内容。"""
+
+    prompt_path = _safe_prompt_path(language, filename)
+    custom_prompt_path = _safe_custom_prompt_path(language, filename)
+    if not prompt_path.exists() or not prompt_path.is_file():
+        raise HTTPException(status_code=404, detail="Prompt 文件不存在")
+
+    normalized_version_id = _safe_prompt_version_id(version_id)
+    if normalized_version_id == _LEGACY_CUSTOM_PROMPT_VERSION_ID:
+        if not custom_prompt_path.exists():
+            raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+        content = custom_prompt_path.read_text(encoding="utf-8")
+    else:
+        version_path = _prompt_version_file_path(language, filename, normalized_version_id)
+        if not version_path.exists() or not version_path.is_file():
+            raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+        content = version_path.read_text(encoding="utf-8")
+
+    validation = _build_prompt_validation(prompt_path.read_text(encoding="utf-8"), content)
+    return PromptVersionFileResponse(
+        language=language,
+        filename=filename,
+        version_id=normalized_version_id,
+        content=content,
+        customized=True,
+        active_version_id=_get_active_prompt_version_id(language, filename),
+        versions=_list_prompt_versions(language, filename),
+        validation=validation,
+    )
+
+
+@router.post("/prompts/{language}/{filename}/versions/{version_id}/activate", response_model=PromptFileResponse)
+def activate_prompt_version(language: str, filename: str, version_id: str):
+    """启用指定 Prompt 自定义版本。"""
+
+    prompt_path = _safe_prompt_path(language, filename)
+    if not prompt_path.exists() or not prompt_path.is_file():
+        raise HTTPException(status_code=404, detail="Prompt 文件不存在")
+
+    normalized_version_id = _safe_prompt_version_id(version_id)
+    if normalized_version_id == _LEGACY_CUSTOM_PROMPT_VERSION_ID:
+        custom_prompt_path = _safe_custom_prompt_path(language, filename)
+        if not custom_prompt_path.exists():
+            raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+        content = custom_prompt_path.read_text(encoding="utf-8")
+    else:
+        version_path = _prompt_version_file_path(language, filename, normalized_version_id)
+        if not version_path.exists() or not version_path.is_file():
+            raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+        content = version_path.read_text(encoding="utf-8")
+
+    validation = _ensure_prompt_parameters_match(prompt_path, content)
+    custom_prompt_path = _safe_custom_prompt_path(language, filename)
+    custom_prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    custom_prompt_path.write_text(content, encoding="utf-8", newline="\n")
+    if normalized_version_id != _LEGACY_CUSTOM_PROMPT_VERSION_ID:
+        _set_active_prompt_version(language, filename, normalized_version_id)
+    clear_prompt_cache()
+    return PromptFileResponse(
+        language=language,
+        filename=filename,
+        content=content,
+        customized=True,
+        active_version_id=_get_active_prompt_version_id(language, filename),
+        versions=_list_prompt_versions(language, filename),
+        validation=validation,
+    )
+
+
+@router.delete("/prompts/{language}/{filename}/versions/{version_id}", response_model=PromptFileResponse)
+def delete_prompt_version(language: str, filename: str, version_id: str):
+    """删除指定 Prompt 自定义版本；删除当前启用版本时恢复默认 Prompt。"""
+
+    prompt_path = _safe_prompt_path(language, filename)
+    custom_prompt_path = _safe_custom_prompt_path(language, filename)
+    if not prompt_path.exists() or not prompt_path.is_file():
+        raise HTTPException(status_code=404, detail="Prompt 文件不存在")
+
+    normalized_version_id = _safe_prompt_version_id(version_id)
+    manifest = _read_prompt_version_manifest(language, filename)
+    active_version_id = _get_active_prompt_version_id(language, filename)
+
+    if normalized_version_id == _LEGACY_CUSTOM_PROMPT_VERSION_ID:
+        if not custom_prompt_path.exists():
+            raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+        custom_prompt_path.unlink()
+        if active_version_id == normalized_version_id:
+            manifest["active_version_id"] = None
+            _write_prompt_version_manifest(language, filename, manifest)
+            clear_prompt_cache()
+    else:
+        version_path = _prompt_version_file_path(language, filename, normalized_version_id)
+        version_exists = any(
+            raw_version.get("id") == normalized_version_id for raw_version in manifest["versions"]
+        )
+        if not version_exists or not version_path.exists() or not version_path.is_file():
+            raise HTTPException(status_code=404, detail="Prompt 自定义版本不存在")
+
+        version_path.unlink()
+        manifest["versions"] = [
+            raw_version
+            for raw_version in manifest["versions"]
+            if raw_version.get("id") != normalized_version_id
+        ]
+        if active_version_id == normalized_version_id:
+            manifest["active_version_id"] = None
+            if custom_prompt_path.exists():
+                custom_prompt_path.unlink()
+            clear_prompt_cache()
+        _write_prompt_version_manifest(language, filename, manifest)
+
+    if custom_prompt_path.exists():
+        content = custom_prompt_path.read_text(encoding="utf-8")
+        customized = True
+    else:
+        content = prompt_path.read_text(encoding="utf-8")
+        customized = False
+    validation = _build_prompt_validation(prompt_path.read_text(encoding="utf-8"), content)
+    return PromptFileResponse(
+        language=language,
+        filename=filename,
+        content=content,
+        customized=customized,
+        active_version_id=_get_active_prompt_version_id(language, filename),
+        versions=_list_prompt_versions(language, filename),
+        validation=validation,
+    )
+
+
 @router.put("/prompts/{language}/{filename}", response_model=PromptFileResponse)
-async def update_prompt_file(language: str, filename: str, content: PromptContentBody):
+def update_prompt_file(language: str, filename: str, request: PromptUpdateRequest):
     """更新指定语言下的 Prompt 文件内容。"""
 
     prompt_path = _safe_prompt_path(language, filename)
@@ -945,17 +1745,36 @@ async def update_prompt_file(language: str, filename: str, content: PromptConten
         raise HTTPException(status_code=404, detail="Prompt 文件不存在")
 
     try:
+        validation = _ensure_prompt_parameters_match(prompt_path, request.content)
         custom_prompt_path.parent.mkdir(parents=True, exist_ok=True)
-        custom_prompt_path.write_text(content, encoding="utf-8", newline="\n")
+        active_version_id = _save_prompt_version(
+            language=language,
+            filename=filename,
+            content=request.content,
+            version_id=request.version_id,
+            label=request.label,
+            create_version=request.create_version,
+        )
+        custom_prompt_path.write_text(request.content, encoding="utf-8", newline="\n")
         clear_prompt_cache()
-        return PromptFileResponse(language=language, filename=filename, content=content, customized=True)
+        return PromptFileResponse(
+            language=language,
+            filename=filename,
+            content=request.content,
+            customized=True,
+            active_version_id=active_version_id,
+            versions=_list_prompt_versions(language, filename),
+            validation=validation,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"保存 Prompt 文件失败: {prompt_path} {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"保存 Prompt 文件失败: {str(e)}") from e
 
 
 @router.delete("/prompts/{language}/{filename}", response_model=PromptFileResponse)
-async def reset_prompt_file(language: str, filename: str):
+def reset_prompt_file(language: str, filename: str):
     """删除用户自定义覆盖，恢复使用内置 Prompt 模板。"""
 
     prompt_path = _safe_prompt_path(language, filename)
@@ -966,22 +1785,37 @@ async def reset_prompt_file(language: str, filename: str):
     try:
         if custom_prompt_path.exists():
             custom_prompt_path.unlink()
+            _set_active_prompt_version(language, filename, None)
             clear_prompt_cache()
         content = prompt_path.read_text(encoding="utf-8")
-        return PromptFileResponse(language=language, filename=filename, content=content, customized=False)
+        return PromptFileResponse(
+            language=language,
+            filename=filename,
+            content=content,
+            customized=False,
+            active_version_id=None,
+            versions=_list_prompt_versions(language, filename),
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"恢复 Prompt 默认模板失败: {prompt_path} {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"恢复 Prompt 默认模板失败: {str(e)}") from e
 
 
 @router.get("/maisaka-prompt-preview", response_class=FileResponse)
-async def get_maisaka_prompt_preview(path: str = Query(..., description="logs/maisaka_prompt 下的相对 HTML 路径")):
-    """打开 MaiSaka 监控中生成的 Prompt HTML 预览。"""
+def get_maisaka_prompt_preview(path: str = Query(..., description="logs/maisaka_prompt 下的相对预览路径")):
+    """打开 MaiSaka 监控中生成的 Prompt 预览。"""
 
     preview_path = _safe_maisaka_prompt_preview_path(path)
     if not preview_path.exists() or not preview_path.is_file():
         raise HTTPException(status_code=404, detail="Prompt 预览文件不存在")
-    return FileResponse(preview_path, media_type="text/html")
+    media_type = {
+        ".html": "text/html",
+        ".json": "application/json",
+        ".txt": "text/plain",
+    }.get(preview_path.suffix.lower(), "application/octet-stream")
+    return FileResponse(preview_path, media_type=media_type)
 
 
 @router.post("/prompt-generator/generate", response_model=PromptGeneratorResponse)
@@ -1006,8 +1840,8 @@ async def generate_prompt_persona(request: PromptGeneratorRequest):
         raw_response = llm_result.response.strip()
         parsed_data = _extract_json_object(raw_response)
         parsed_result = _normalize_prompt_generator_result(parsed_data)
-        if not parsed_result.personality or not parsed_result.reply_style:
-            raise ValueError("模型返回缺少 personality 或 reply_style 字段")
+        if not parsed_result.personality or not parsed_result.behavior_style or not parsed_result.reply_style:
+            raise ValueError("模型返回缺少 personality、behavior_style 或 reply_style 字段")
 
         return PromptGeneratorResponse(
             model_name=llm_result.model_name or model_name,
@@ -1028,7 +1862,7 @@ async def generate_prompt_persona(request: PromptGeneratorRequest):
 
 
 @router.post("/prompt-generator/apply", response_model=PromptGeneratorApplyResponse)
-async def apply_prompt_generator_blocks(request: PromptGeneratorApplyRequest):
+def apply_prompt_generator_blocks(request: PromptGeneratorApplyRequest):
     """把人设生成器产出的配置块写入 bot_config.toml。"""
 
     try:
@@ -1041,7 +1875,7 @@ async def apply_prompt_generator_blocks(request: PromptGeneratorApplyRequest):
 
 
 @router.get("/schema/bot")
-async def get_bot_config_schema():
+def get_bot_config_schema():
     """获取麦麦主程序配置架构"""
     try:
         # Config 类包含所有子配置
@@ -1052,8 +1886,20 @@ async def get_bot_config_schema():
         raise HTTPException(status_code=500, detail=f"获取配置架构失败: {str(e)}") from e
 
 
+@compat_router.get("/schema")
+def get_compat_bot_config_schema():
+    """兼容旧版 /api/config/schema，返回主程序配置架构。"""
+    return get_bot_config_schema()
+
+
+@compat_router.get("/schema/bot")
+def get_compat_bot_config_schema_alias():
+    """兼容旧版 /api/config/schema/bot。"""
+    return get_bot_config_schema()
+
+
 @router.get("/schema/model")
-async def get_model_config_schema():
+def get_model_config_schema():
     """获取模型配置架构（包含提供商和模型任务配置）"""
     try:
         schema = _get_cached_schema("model", ModelConfig)
@@ -1067,7 +1913,7 @@ async def get_model_config_schema():
 
 
 @router.get("/schema/section/{section_name}")
-async def get_config_section_schema(section_name: str):
+def get_config_section_schema(section_name: str):
     """
     获取指定配置节的架构
 
@@ -1144,7 +1990,7 @@ async def get_config_section_schema(section_name: str):
 
 
 @router.get("/bot")
-async def get_bot_config():
+def get_bot_config():
     """获取麦麦主程序配置"""
     try:
         config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
@@ -1163,7 +2009,7 @@ async def get_bot_config():
 
 
 @router.get("/model")
-async def get_model_config():
+def get_model_config():
     """获取模型配置（包含提供商和模型任务配置）"""
     try:
         config_path = os.path.join(CONFIG_DIR, "model_config.toml")
@@ -1181,11 +2027,123 @@ async def get_model_config():
         raise HTTPException(status_code=500, detail=f"读取配置文件失败: {str(e)}") from e
 
 
+@router.get("/model/versions", response_model=ModelConfigVersionListResponse)
+def list_model_config_versions():
+    """列出模型配置文件副本。"""
+
+    active_path = _active_model_config_path()
+    if not active_path.exists():
+        raise HTTPException(status_code=404, detail="当前模型配置文件不存在")
+
+    active_version = _build_model_config_version_info(
+        version_id="active",
+        label=_get_active_model_config_label(),
+        config_path=active_path,
+        active=True,
+    )
+    return ModelConfigVersionListResponse(
+        active_version=active_version,
+        versions=_list_model_config_versions(),
+    )
+
+
+@router.post("/model/versions", response_model=ModelConfigVersionResponse)
+def create_model_config_version(request: ModelConfigVersionCreateRequest):
+    """将当前启用的模型配置保存为一个未启用副本。"""
+
+    active_path = _active_model_config_path()
+    version = _copy_model_config_to_version(active_path, request.label)
+    logger.info(f"已创建模型配置副本: {version.id} ({version.label})")
+    return ModelConfigVersionResponse(version=version, message="模型配置副本已创建")
+
+
+@router.patch("/model/versions/{version_id}", response_model=ModelConfigVersionResponse)
+def update_model_config_version(version_id: str, request: ModelConfigVersionUpdateRequest):
+    """更新模型配置文件副本展示名称。"""
+
+    normalized_version_id = _safe_model_config_version_id(version_id)
+    version_path = _model_config_version_path(normalized_version_id)
+    if not version_path.exists():
+        raise HTTPException(status_code=404, detail="模型配置副本不存在")
+
+    _upsert_model_version_metadata(normalized_version_id, request.label)
+    version = _build_model_config_version_info(
+        version_id=normalized_version_id,
+        label=request.label.strip(),
+        config_path=version_path,
+    )
+    return ModelConfigVersionResponse(version=version, message="模型配置副本已更新")
+
+
+@router.delete("/model/versions/{version_id}")
+def delete_model_config_version(version_id: str):
+    """删除未启用的模型配置文件副本。"""
+
+    normalized_version_id = _safe_model_config_version_id(version_id)
+    version_path = _model_config_version_path(normalized_version_id)
+    if not version_path.exists():
+        raise HTTPException(status_code=404, detail="模型配置副本不存在")
+
+    version_path.unlink()
+    _remove_model_version_metadata(normalized_version_id)
+    logger.info(f"已删除模型配置副本: {normalized_version_id}")
+    return {"success": True, "message": "模型配置副本已删除"}
+
+
+@router.post("/model/versions/{version_id}/activate", response_model=ModelConfigVersionResponse)
+async def activate_model_config_version(version_id: str, request: ModelConfigVersionSwitchRequest):
+    """切换当前启用的模型配置文件副本。"""
+
+    normalized_version_id = _safe_model_config_version_id(version_id)
+    active_path = _active_model_config_path()
+    version_path = _model_config_version_path(normalized_version_id)
+    if not version_path.exists():
+        raise HTTPException(status_code=404, detail="模型配置副本不存在")
+    if not active_path.exists():
+        raise HTTPException(status_code=404, detail="当前模型配置文件不存在")
+
+    selected_metadata = _model_version_metadata_by_id().get(normalized_version_id, {})
+    selected_label = str(selected_metadata.get("label") or normalized_version_id)
+
+    _validate_model_config_file(version_path)
+    if request.archive_current:
+        archive_label = request.archive_label.strip() or _default_model_config_archive_label()
+        _copy_model_config_to_version(active_path, archive_label)
+
+    temp_path = active_path.with_name(f".{active_path.name}.{normalized_version_id}.tmp")
+    try:
+        shutil.copy2(version_path, temp_path)
+        os.replace(temp_path, active_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+    try:
+        version_path.unlink()
+        _remove_model_version_metadata(normalized_version_id)
+    except OSError as exc:
+        logger.warning(f"模型配置副本已切换，但删除已启用副本文件失败: {version_path}，原因: {exc}")
+
+    _set_active_model_config_label(selected_label)
+
+    if active_path == config_manager.model_config_path.resolve():
+        await config_manager.reload_config(changed_scopes=["model"])
+
+    active_version = _build_model_config_version_info(
+        version_id="active",
+        label=_get_active_model_config_label(),
+        config_path=active_path,
+        active=True,
+    )
+    logger.info(f"已切换模型配置副本: {normalized_version_id}")
+    return ModelConfigVersionResponse(version=active_version, message="模型配置副本已切换")
+
+
 # ===== 配置更新接口 =====
 
 
 @router.post("/bot")
-async def update_bot_config(config_data: ConfigBody):
+def update_bot_config(config_data: ConfigBody):
     """更新麦麦主程序配置"""
     try:
         config_data = _coerce_config_numeric_values(config_data, Config)
@@ -1224,6 +2182,7 @@ async def update_model_config(config_data: ConfigBody):
         # 保存配置文件（自动保留注释和格式）
         config_path = os.path.join(CONFIG_DIR, "model_config.toml")
         save_toml_with_format(config_data, config_path)
+        await _reload_model_config_after_save()
 
         logger.info("模型配置已更新")
         return {"success": True, "message": "配置已保存"}
@@ -1238,7 +2197,7 @@ async def update_model_config(config_data: ConfigBody):
 
 
 @router.post("/bot/section/{section_name}")
-async def update_bot_config_section(section_name: str, section_data: SectionBody):
+def update_bot_config_section(section_name: str, section_data: SectionBody):
     """更新麦麦主程序配置的指定节（保留注释和格式）"""
     try:
         # 读取现有配置
@@ -1290,7 +2249,7 @@ async def update_bot_config_section(section_name: str, section_data: SectionBody
 
 
 @router.get("/bot/raw")
-async def get_bot_config_raw():
+def get_bot_config_raw():
     """获取麦麦主程序配置的原始 TOML 内容"""
     try:
         config_path = os.path.join(CONFIG_DIR, "bot_config.toml")
@@ -1309,7 +2268,7 @@ async def get_bot_config_raw():
 
 
 @router.post("/bot/raw")
-async def update_bot_config_raw(raw_content: RawContentBody):
+def update_bot_config_raw(raw_content: RawContentBody):
     """更新麦麦主程序配置（直接保存原始 TOML 内容，会先验证格式）"""
     try:
         # 验证 TOML 格式
@@ -1336,6 +2295,18 @@ async def update_bot_config_raw(raw_content: RawContentBody):
     except Exception as e:
         logger.error(f"保存配置文件失败: {e}")
         raise HTTPException(status_code=500, detail=f"保存配置文件失败: {str(e)}") from e
+
+
+@compat_router.get("/raw")
+def get_compat_bot_config_raw():
+    """兼容旧版 /api/config/raw，读取主程序原始 TOML。"""
+    return get_bot_config_raw()
+
+
+@compat_router.post("/raw")
+def update_compat_bot_config_raw(raw_content: RawContentBody):
+    """兼容旧版 /api/config/raw，写入主程序原始 TOML。"""
+    return update_bot_config_raw(raw_content)
 
 
 @router.post("/model/section/{section_name}")
@@ -1373,9 +2344,9 @@ async def update_model_config_section(section_name: str, section_data: SectionBo
             ModelConfig.from_dict(AttributeData(), copy.deepcopy(plain_config_data))
         except Exception as e:
             logger.error(f"配置数据验证失败，详细错误: {str(e)}")
-            allow_orphaned_provider_save = False
-            # 特殊处理：如果是更新 api_providers，检查是否有模型引用了已删除的provider
-            if section_name == "api_providers" and "api_provider" in str(e):
+            allow_incomplete_provider_save = False
+            # 更新 api_providers 时只校验该小节，允许用户从模型列表为空等不完整状态中恢复配置。
+            if section_name == "api_providers":
                 _validate_api_provider_section(section_data)
                 original_orphaned = _collect_orphaned_model_api_providers(original_plain_config_data)
                 orphaned_models = _collect_orphaned_model_api_providers(plain_config_data)
@@ -1385,7 +2356,15 @@ async def update_model_config_section(section_name: str, section_data: SectionBo
                     if original_orphaned.get(model_name) != api_provider
                 ]
 
-                if orphaned_models and not introduced_orphaned_models:
+                if introduced_orphaned_models:
+                    error_msg = (
+                        "以下模型引用了已删除的提供商: "
+                        f"{', '.join(introduced_orphaned_models)}。"
+                        "请先在模型管理页面删除这些模型，或重新分配它们的提供商。"
+                    )
+                    raise HTTPException(status_code=400, detail=error_msg) from e
+
+                if orphaned_models:
                     logger.warning(
                         "api_providers 已保存，但模型配置中仍存在历史无效引用: "
                         + ", ".join(
@@ -1393,23 +2372,20 @@ async def update_model_config_section(section_name: str, section_data: SectionBo
                             for model_name, api_provider in orphaned_models.items()
                         )
                     )
-                    allow_orphaned_provider_save = True
-                elif introduced_orphaned_models:
-                    error_msg = (
-                        "以下模型引用了已删除的提供商: "
-                        f"{', '.join(introduced_orphaned_models)}。"
-                        "请先在模型管理页面删除这些模型，或重新分配它们的提供商。"
-                    )
-                    raise HTTPException(status_code=400, detail=error_msg) from e
+                    allow_incomplete_provider_save = True
+                elif not plain_config_data.get("models"):
+                    logger.warning("api_providers 已保存，但模型列表仍为空，请继续添加模型")
+                    allow_incomplete_provider_save = True
                 else:
                     raise HTTPException(status_code=400, detail=f"配置数据验证失败: {str(e)}") from e
-            if not allow_orphaned_provider_save:
+            if not allow_incomplete_provider_save:
                 raise HTTPException(status_code=400, detail=f"配置数据验证失败: {str(e)}") from e
 
         config_data = plain_config_data
 
         # 保存配置（格式化数组为多行，保留注释）
         save_toml_with_format(config_data, config_path)
+        await _reload_model_config_after_save()
 
         logger.info(f"配置节 '{section_name}' 已更新（保留注释）")
         return {"success": True, "message": f"配置节 '{section_name}' 已保存"}
@@ -1482,7 +2458,7 @@ def _to_relative_path(path: str) -> str:
 
 
 @router.get("/adapter-config/path")
-async def get_adapter_config_path():
+def get_adapter_config_path():
     """获取保存的适配器配置文件路径"""
     try:
         # 从 data/webui.json 读取路径偏好
@@ -1524,7 +2500,7 @@ async def get_adapter_config_path():
 
 
 @router.post("/adapter-config/path")
-async def save_adapter_config_path(data: PathBody):
+def save_adapter_config_path(data: PathBody):
     """保存适配器配置文件路径偏好"""
     try:
         path = data.get("path")
@@ -1566,7 +2542,7 @@ async def save_adapter_config_path(data: PathBody):
 
 
 @router.get("/adapter-config")
-async def get_adapter_config(path: str):
+def get_adapter_config(path: str):
     """从指定路径读取适配器配置文件"""
     try:
         if not path:
@@ -1593,7 +2569,7 @@ async def get_adapter_config(path: str):
 
 
 @router.post("/adapter-config")
-async def save_adapter_config(data: PathBody):
+def save_adapter_config(data: PathBody):
     """保存适配器配置到指定路径"""
     try:
         path = data.get("path")

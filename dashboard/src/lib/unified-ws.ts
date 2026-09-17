@@ -1,7 +1,7 @@
-import { fetchWithAuth } from './fetch-with-auth'
-import { getSetting } from './settings-manager'
-
 import { getWsBaseUrl } from '@/lib/api-base'
+import { backendApi } from '@/lib/http'
+
+import { getSetting } from './settings-manager'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected'
 
@@ -61,20 +61,10 @@ function isEventEnvelope(message: WsServerEnvelope): message is WsEventEnvelope 
 
 async function getWsToken(): Promise<string | null> {
   try {
-    const response = await fetchWithAuth('/api/webui/ws-token', {
-      method: 'GET',
-      credentials: 'include',
-    })
-
-    if (!response.ok) {
-      return null
-    }
-
-    const data = await response.json()
+    const data = await backendApi.get<{ success?: boolean; token?: string }>('/api/webui/ws-token')
     if (data.success && data.token) {
-      return data.token as string
+      return data.token
     }
-
     return null
   } catch (error) {
     console.error('获取统一 WebSocket token 失败:', error)
@@ -217,7 +207,7 @@ class UnifiedWebSocketClient {
 
   private async sendRequest(
     payload: Record<string, unknown>,
-    timeoutMs = 10000,
+    timeoutMs = 10000
   ): Promise<Record<string, unknown>> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       throw new Error('统一 WebSocket 尚未连接')
@@ -459,7 +449,7 @@ class UnifiedWebSocketClient {
   async subscribe(
     domain: string,
     topic: string,
-    data?: Record<string, unknown>,
+    data?: Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     await this.connect()
     this.subscriptions.set(this.getSubscriptionKey(domain, topic), {
@@ -489,6 +479,18 @@ class UnifiedWebSocketClient {
       domain,
       topic,
       data: {},
+    })
+  }
+
+  updateSubscriptionData(domain: string, topic: string, data: Record<string, unknown>): void {
+    const subscriptionKey = this.getSubscriptionKey(domain, topic)
+    const subscription = this.subscriptions.get(subscriptionKey)
+    if (!subscription) {
+      return
+    }
+    this.subscriptions.set(subscriptionKey, {
+      ...subscription,
+      data,
     })
   }
 

@@ -1,9 +1,8 @@
-import type { ApiResponse } from '@/types/api'
-import type { PluginInfo, PluginType } from '@/types/plugin'
+import type { PluginInfo, PluginReleaseCatalog, PluginType } from '@/types/plugin'
 
-import { fetchWithAuth } from '@/lib/fetch-with-auth'
-import { parseResponse } from '@/lib/api-helpers'
+import { ApiError, backendApi } from '@/lib/http'
 import { pluginProgressClient } from '@/lib/plugin-progress-client'
+
 import type { GitStatus, MaimaiVersion } from './types'
 
 /**
@@ -14,7 +13,7 @@ const PLUGIN_REPO_NAME = 'plugin-repo'
 const PLUGIN_REPO_BRANCH = 'main'
 const PLUGIN_DETAILS_FILE = 'plugin_details.json'
 const PLUGIN_LIST_CACHE_TTL = 5 * 60 * 1000
-const PLUGIN_LIST_STORAGE_KEY = 'maibot-plugin-market-list-cache'
+const PLUGIN_LIST_STORAGE_KEY = 'maibot-plugin-market-list-cache-v2'
 const PLUGIN_TYPES = new Set<PluginType>([
   'adapter',
   'chat',
@@ -31,8 +30,8 @@ const PLUGIN_TYPES = new Set<PluginType>([
   'other',
 ])
 
-let pluginListCache: { timestamp: number; result: ApiResponse<PluginInfo[]> } | null = null
-let pluginListRequest: Promise<ApiResponse<PluginInfo[]>> | null = null
+let pluginListCache: { timestamp: number; result: PluginInfo[] } | null = null
+let pluginListRequest: Promise<PluginInfo[]> | null = null
 
 interface PluginListStorageCache {
   timestamp: number
@@ -60,6 +59,7 @@ interface PluginApiResponse {
       min_version: string
       max_version?: string
     }
+    sdk?: PluginInfo['manifest']['sdk']
     homepage_url?: string
     repository_url?: string
     urls?: {
@@ -71,6 +71,7 @@ interface PluginApiResponse {
     keywords: string[]
     plugin_type?: string
     display?: PluginInfo['manifest']['display']
+    changelog?: string
     default_locale: string
     locales_path?: string
   }
@@ -78,8 +79,14 @@ interface PluginApiResponse {
   [key: string]: unknown
 }
 
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 function uniqueNonEmptyValues(values: Array<string | undefined>): string[] {
-  return Array.from(new Set(values.map(value => value?.trim()).filter((value): value is string => Boolean(value))))
+  return Array.from(
+    new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))
+  )
 }
 
 function normalizePluginType(value: unknown): PluginType {
@@ -108,12 +115,14 @@ function normalizePluginManifest(manifest: PluginApiResponse['manifest']): Plugi
     author: manifest.author || { name: 'Unknown' },
     license: manifest.license || 'Unknown',
     host_application: manifest.host_application || { min_version: '0.0.0' },
+    sdk: manifest.sdk,
     homepage_url: homepageUrl,
     repository_url: repositoryUrl,
     urls: manifest.urls,
     keywords: manifest.keywords || [],
     plugin_type: normalizePluginType(manifest.plugin_type),
     display: manifest.display,
+    changelog: normalizeOptionalString(manifest.changelog),
     default_locale: manifest.default_locale || 'zh-CN',
     locales_path: manifest.locales_path,
   }
@@ -137,7 +146,9 @@ function normalizePluginAssetUrl(value: unknown): string | undefined {
   return `https://raw.githubusercontent.com/${PLUGIN_REPO_OWNER}/${PLUGIN_REPO_NAME}/${PLUGIN_REPO_BRANCH}/${normalizedPath}`
 }
 
-function normalizePluginAssets(assets: PluginApiResponse['assets']): PluginInfo['assets'] | undefined {
+function normalizePluginAssets(
+  assets: PluginApiResponse['assets']
+): PluginInfo['assets'] | undefined {
   const icon64 = normalizePluginAssetUrl(assets?.icon_64)
   if (!icon64) {
     return undefined
@@ -205,8 +216,8 @@ function writePluginListStorageCache(data: PluginInfo[]): void {
 }
 
 export function getCachedPluginList(): PluginInfo[] | null {
-  if (pluginListCache?.result.success) {
-    return pluginListCache.result.data
+  if (pluginListCache) {
+    return pluginListCache.result
   }
 
   const storedCache = readPluginListStorageCache()
@@ -214,43 +225,45 @@ export function getCachedPluginList(): PluginInfo[] | null {
     return null
   }
 
-  const result: ApiResponse<PluginInfo[]> = { success: true, data: storedCache.data }
-  pluginListCache = { timestamp: storedCache.timestamp, result }
+  pluginListCache = { timestamp: storedCache.timestamp, result: storedCache.data }
   return storedCache.data
 }
 
 /**
  * 从远程获取插件列表(通过后端代理避免 CORS)
  */
-async function fetchPluginListUncached(): Promise<ApiResponse<PluginInfo[]>> {
-  const response = await fetchWithAuth('/api/webui/plugins/fetch-raw', {
-    method: 'POST',
-    body: JSON.stringify({
-      owner: PLUGIN_REPO_OWNER,
-      repo: PLUGIN_REPO_NAME,
-      branch: PLUGIN_REPO_BRANCH,
-      file_path: PLUGIN_DETAILS_FILE
-    })
-  })
-  
-  const apiResult = await parseResponse<{ success: boolean; data: string; error?: string }>(response)
-  
-  if (!apiResult.success) {
-    return apiResult
-  }
-  
-  const result = apiResult.data
-  if (!result.success || !result.data) {
-    return {
-      success: false,
-      error: result.error || '获取插件列表失败'
+async function fetchPluginListUncached(): Promise<PluginInfo[]> {
+  const result = await backendApi.post<{ success: boolean; data: string; error?: string }>(
+    '/api/webui/plugins/fetch-raw',
+    {
+      body: {
+        owner: PLUGIN_REPO_OWNER,
+        repo: PLUGIN_REPO_NAME,
+        branch: PLUGIN_REPO_BRANCH,
+        file_path: PLUGIN_DETAILS_FILE,
+      },
+      errorMessage: '获取插件列表失败',
     }
+  )
+
+  // 业务级失败：该 endpoint 的错误字段是 error 而非 message，不走 requireSuccess
+  if (!result.success || !result.data) {
+    throw new ApiError(result.error || '获取插件列表失败', { detail: result })
   }
-  
+
   const data: PluginApiResponse[] = JSON.parse(result.data)
-  
+  const catalog = await backendApi.get<{ plugins: PluginReleaseCatalog[] }>('/api/webui/plugins/releases', {
+    errorMessage: '获取插件发布版本失败',
+  })
+  // 部分插件只在 Tag 中保留有效清单，即使分支详情同步失败也要保留发布版本入口。
+  for (const entry of catalog.plugins) {
+    if (data.some((item) => item.id === entry.id || item.manifest?.id === entry.manifest_id)) continue
+    const release = entry.versions.find((item) => item.version === entry.recommended_version) || entry.versions[0]
+    if (release) data.push({ id: entry.id, manifest: release.manifest })
+  }
+
   const pluginList = data
-    .filter(item => {
+    .filter((item) => {
       if (!item?.manifest) {
         console.warn('跳过无效插件数据:', item)
         return false
@@ -270,35 +283,42 @@ async function fetchPluginListUncached(): Promise<ApiResponse<PluginInfo[]>> {
       const manifestId = item.manifest.id?.trim()
       const marketplaceId = item.id?.trim()
       const pluginId = manifestId || marketplaceId!
+      const releases = catalog.plugins.find((entry) => entry.id === marketplaceId || entry.manifest_id === pluginId) || {
+        id: marketplaceId || pluginId, repositoryUrl: item.manifest.urls?.repository || item.manifest.repository_url || '',
+        mode: 'branch' as const, versions: [], recommended_version: null,
+        sync_error: '插件尚未收录到版本索引，请先同步插件中心',
+      }
+      const recommended = releases?.versions.find((release) => release.version === releases.recommended_version)
 
       return {
         id: pluginId,
         marketplace_id: marketplaceId,
         marketplace_order: index,
         stats_ids: uniqueNonEmptyValues([manifestId]),
-        manifest: normalizePluginManifest({ ...item.manifest, id: pluginId }),
+        manifest: normalizePluginManifest({ ...(recommended?.manifest || item.manifest), id: pluginId }),
+        releases,
         assets: normalizePluginAssets(item.assets),
         downloads: 0,
         rating: 0,
         review_count: 0,
         installed: false,
         source: 'market' as const,
+        changelog: normalizeOptionalString(item.changelog),
         published_at: normalizeDateString(item.published_at ?? item.created_at ?? item.added_at),
         updated_at: normalizeDateString(item.updated_at ?? item.modified_at),
       }
     })
-  
-  return {
-    success: true,
-    data: pluginList
-  }
+
+  return pluginList
 }
 
-export async function fetchPluginList(options: { forceRefresh?: boolean } = {}): Promise<ApiResponse<PluginInfo[]>> {
+export async function fetchPluginList(
+  options: { forceRefresh?: boolean } = {}
+): Promise<PluginInfo[]> {
   if (
-    !options.forceRefresh
-    && pluginListCache
-    && Date.now() - pluginListCache.timestamp < PLUGIN_LIST_CACHE_TTL
+    !options.forceRefresh &&
+    pluginListCache &&
+    Date.now() - pluginListCache.timestamp < PLUGIN_LIST_CACHE_TTL
   ) {
     return pluginListCache.result
   }
@@ -306,19 +326,17 @@ export async function fetchPluginList(options: { forceRefresh?: boolean } = {}):
   if (!options.forceRefresh && !pluginListCache) {
     const storedCache = readPluginListStorageCache()
     if (storedCache && Date.now() - storedCache.timestamp < PLUGIN_LIST_CACHE_TTL) {
-      const result: ApiResponse<PluginInfo[]> = { success: true, data: storedCache.data }
-      pluginListCache = { timestamp: storedCache.timestamp, result }
-      return result
+      pluginListCache = { timestamp: storedCache.timestamp, result: storedCache.data }
+      return storedCache.data
     }
   }
 
   if (!pluginListRequest || options.forceRefresh) {
+    // 仅在成功（fetchPluginListUncached 未抛错）时写入内存/本地缓存
     pluginListRequest = fetchPluginListUncached()
       .then((result) => {
-        if (result.success) {
-          pluginListCache = { timestamp: Date.now(), result }
-          writePluginListStorageCache(result.data)
-        }
+        pluginListCache = { timestamp: Date.now(), result }
+        writePluginListStorageCache(result)
         return result
       })
       .finally(() => {
@@ -332,50 +350,73 @@ export async function fetchPluginList(options: { forceRefresh?: boolean } = {}):
 /**
  * 检查本机 Git 安装状态
  */
-export async function checkGitStatus(): Promise<ApiResponse<GitStatus>> {
-  const response = await fetchWithAuth('/api/webui/plugins/git-status')
-  
-  const apiResult = await parseResponse<GitStatus>(response)
-  
-  if (!apiResult.success) {
-    return {
-      success: true,
-      data: {
+export async function checkGitStatus(): Promise<GitStatus> {
+  try {
+    return await backendApi.get<GitStatus>('/api/webui/plugins/git-status', {
+      errorMessage: '无法检测 Git 安装状态',
+    })
+  } catch (error) {
+    // 保持原有行为：HTTP 错误 / 响应解析失败时按“无法检测”处理；网络层失败与认证失效（401）仍向上抛出
+    if (error instanceof ApiError && error.status !== undefined && error.status !== 401) {
+      return {
         installed: false,
-        error: '无法检测 Git 安装状态'
+        error: '无法检测 Git 安装状态',
       }
     }
+    throw error
   }
-  
-  return apiResult
 }
 
 /**
  * 获取麦麦版本信息
  */
-export async function getMaimaiVersion(): Promise<ApiResponse<MaimaiVersion>> {
-  const response = await fetchWithAuth('/api/webui/plugins/version')
-  
-  const apiResult = await parseResponse<MaimaiVersion>(response)
-  
-  if (!apiResult.success) {
-    return {
-      success: true,
-      data: {
+export async function getMaimaiVersion(): Promise<MaimaiVersion> {
+  try {
+    return await backendApi.get<MaimaiVersion>('/api/webui/plugins/version', {
+      errorMessage: '获取麦麦版本信息失败',
+    })
+  } catch (error) {
+    // 保持原有行为：HTTP 错误 / 响应解析失败时回退为 0.0.0；网络层失败与认证失效（401）仍向上抛出
+    if (error instanceof ApiError && error.status !== undefined && error.status !== 401) {
+      return {
         version: '0.0.0',
         version_major: 0,
         version_minor: 0,
-        version_patch: 0
+        version_patch: 0,
       }
     }
+    throw error
   }
-  
-  return apiResult
+}
+
+type VersionTuple = [number, number, number]
+
+function parseVersionTuple(version: string | undefined): VersionTuple {
+  if (!version) {
+    return [0, 0, 0]
+  }
+
+  const normalizedVersion = version.trim().replace(/-snapshot\.\d+$/, '')
+  const parts = normalizedVersion.split('.').map((part) => Number.parseInt(part, 10))
+  return [
+    Number.isFinite(parts[0]) ? parts[0] : 0,
+    Number.isFinite(parts[1]) ? parts[1] : 0,
+    Number.isFinite(parts[2]) ? parts[2] : 0,
+  ]
+}
+
+function compareVersionTuple(left: VersionTuple, right: VersionTuple): number {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] < right[index]) return -1
+    if (left[index] > right[index]) return 1
+  }
+
+  return 0
 }
 
 /**
  * 比较版本号
- * 
+ *
  * @param pluginMinVersion 插件要求的最小版本
  * @param pluginMaxVersion 插件要求的最大版本(可选)
  * @param maimaiVersion 麦麦当前版本
@@ -386,39 +427,36 @@ export function isPluginCompatible(
   pluginMaxVersion: string | undefined,
   maimaiVersion: MaimaiVersion
 ): boolean {
-  // 解析插件最小版本
-  const minParts = pluginMinVersion.split('.').map(p => parseInt(p) || 0)
-  const minMajor = minParts[0] || 0
-  const minMinor = minParts[1] || 0
-  const minPatch = minParts[2] || 0
-  
-  // 检查最小版本
-  if (maimaiVersion.version_major < minMajor) return false
-  if (maimaiVersion.version_major === minMajor && maimaiVersion.version_minor < minMinor) return false
-  if (maimaiVersion.version_major === minMajor && 
-      maimaiVersion.version_minor === minMinor && 
-      maimaiVersion.version_patch < minPatch) return false
-  
+  const currentVersion: VersionTuple = [
+    maimaiVersion.version_major,
+    maimaiVersion.version_minor,
+    maimaiVersion.version_patch,
+  ]
+  const minVersion = parseVersionTuple(pluginMinVersion)
+
+  if (compareVersionTuple(currentVersion, minVersion) < 0) {
+    return false
+  }
+
   // 检查最大版本(如果有)
   if (pluginMaxVersion) {
-    const maxParts = pluginMaxVersion.split('.').map(p => parseInt(p) || 0)
-    const maxMajor = maxParts[0] || 0
-    const maxMinor = maxParts[1] || 0
-    const maxPatch = maxParts[2] || 0
-    
-    if (maimaiVersion.version_major > maxMajor) return false
-    if (maimaiVersion.version_major === maxMajor && maimaiVersion.version_minor > maxMinor) return false
-    if (maimaiVersion.version_major === maxMajor && 
-        maimaiVersion.version_minor === maxMinor && 
-        maimaiVersion.version_patch > maxPatch) return false
+    const maxVersion = parseVersionTuple(pluginMaxVersion)
+    const isHigherThanMax = compareVersionTuple(currentVersion, maxVersion) > 0
+
+    // 与运行时 manifest 校验保持一致：仅修订号高于声明上限时，以兼容模式允许。
+    const isSameMajorMinor =
+      currentVersion[0] === maxVersion[0] && currentVersion[1] === maxVersion[1]
+    if (isHigherThanMax && !isSameMajorMinor) {
+      return false
+    }
   }
-  
+
   return true
 }
 
 /**
  * 连接插件加载进度 WebSocket
- * 
+ *
  * 使用临时 token 进行认证,异步获取 token 后连接
  */
 export async function connectPluginProgressWebSocket(

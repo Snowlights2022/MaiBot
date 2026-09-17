@@ -1,60 +1,15 @@
-import type { TFunction } from 'i18next'
 import type { CSSProperties } from 'react'
 import { Link } from '@tanstack/react-router'
-import {
-  Activity,
-  AlertCircle,
-  BarChart3,
-  CheckCircle2,
-  ClipboardCheck,
-  Clock,
-  Database,
-  DollarSign,
-  ExternalLink,
-  FileText,
-  HardDrive,
-  ImageIcon,
-  MessageSquare,
-  Plus,
-  Power,
-  Puzzle,
-  RefreshCw,
-  RotateCcw,
-  Settings,
-  Smile,
-  TrendingUp,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react'
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { AlertCircle, ArrowRight, ExternalLink, Pencil, RefreshCw } from 'lucide-react'
+import { motion, useReducedMotion } from 'motion/react'
+import { lazy, Suspense, useCallback, useContext, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  XAxis,
-  YAxis,
-} from 'recharts'
-import axios from 'axios'
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { ExpressionReviewer } from '@/components/expression-reviewer'
 import { RestartOverlay } from '@/components/restart-overlay'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from '@/components/ui/chart'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
@@ -69,24 +24,40 @@ import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ThinkingIllustration } from '@/components/ui/thinking-illustration'
-import { ZoomableChart } from '@/components/ui/zoomable-chart'
-import { getBotConfigCached, getModelConfigCached } from '@/lib/config-api'
-import { getReviewStats } from '@/lib/expression-api'
-import { fetchWithAuth } from '@/lib/fetch-with-auth'
-import {
-  getInstalledPlugins,
-  getPluginConfigSchema,
-  type InstalledPlugin,
-  type PluginConfigSchema,
-} from '@/lib/plugin-api'
 import { RestartProvider, useRestart } from '@/lib/restart-context'
-import { getLocalCacheStats, type LocalCacheStats } from '@/lib/system-api'
 import { ThemeProviderContext } from '@/lib/theme-context'
-import type { DashboardStyle } from '@/lib/theme/tokens'
+import { openUpdateNotice } from '@/lib/update-notice-events'
 import { cn } from '@/lib/utils'
 import { APP_VERSION } from '@/lib/version'
+
+import { useBotStatus } from './home/hooks/useBotStatus'
+import { useDashboardData } from './home/hooks/useDashboardData'
+import { useFeatureStatus } from './home/hooks/useFeatureStatus'
+import { useLocalCacheMetrics } from './home/hooks/useLocalCacheMetrics'
+import { useMaibotVersion } from './home/hooks/useMaibotVersion'
+import { HitokotoEditorDialog } from './home/HitokotoEditorDialog'
+import { HomeCardManager, type HomeCardDefinition } from './home/HomeCardManager'
+import { usePluginHomeCards } from './home/hooks/usePluginHomeCards'
+import { useQuickShortcuts } from './home/hooks/useQuickShortcuts'
+import { useReviewStats } from './home/hooks/useReviewStats'
+import {
+  CostTrendCard,
+  DailyStatisticsCard,
+  ModelDetailsCard,
+  ModelDistributionCard,
+  PromptCacheCard,
+  RequestTrendCard,
+  StatisticsOverviewCard,
+  TokenTrendCard,
+} from './home/StatisticsCards'
+import type { TimeSeriesData } from './home/types'
+
+const ExpressionReviewer = lazy(() =>
+  import('@/components/expression-reviewer').then((module) => ({
+    default: module.ExpressionReviewer,
+  }))
+)
 
 // 主导出组件：包装 RestartProvider
 export function IndexPage() {
@@ -97,301 +68,247 @@ export function IndexPage() {
   )
 }
 
-// 机器人状态接口
-interface BotStatus {
-  running: boolean
-  uptime: number
-  version: string
-  start_time: string
-}
-
-interface ReleaseStatus {
-  version: string
-  url: string
-}
-
-interface StatisticsSummary {
-  total_requests: number
-  total_cost: number
-  total_tokens: number
-  online_time: number
-  total_messages: number
-  total_replies: number
-  avg_response_time: number
-  cost_per_hour: number
-  tokens_per_hour: number
-}
-
-interface ModelStatistics {
-  model_name: string
-  request_count: number
-  total_cost: number
-  total_tokens: number
-  avg_response_time: number
-}
-
-interface TimeSeriesData {
-  timestamp: string
-  requests: number
-  cost: number
-  tokens: number
-}
-
-interface RecentActivity {
-  timestamp: string
-  model: string
-  request_type: string
-  tokens: number
-  cost: number
-  time_cost: number
-  status: string
-}
-
-interface DashboardData {
-  summary: StatisticsSummary
-  model_stats: ModelStatistics[]
-  hourly_data: TimeSeriesData[]
-  daily_data: TimeSeriesData[]
-  recent_activity: RecentActivity[]
-}
-
-interface FeatureStatus {
-  memoryEnabled: boolean
-  visualEnabled: boolean
-}
-
-type QuickShortcutCategory = 'system' | 'config' | 'resource' | 'plugin' | 'monitor' | 'external'
-
-interface QuickShortcutDefinition {
-  id: string
-  category: QuickShortcutCategory
-  label: string
-  description: string
-  icon: LucideIcon
-  href?: string
-  action?: () => void | Promise<void>
-  disabled?: boolean
-  badge?: string
-  external?: boolean
-}
-
-const DEFAULT_TIME_RANGE = 24
-const DASHBOARD_DATA_CACHE_TTL = 5 * 60_000
-const BOT_STATUS_CACHE_TTL = 30_000
-const LOCAL_CACHE_STATS_CACHE_TTL = 15 * 60_000
-const QUICK_SHORTCUT_STORAGE_KEY = 'maibot-home-quick-shortcuts'
-const DEFAULT_QUICK_SHORTCUT_IDS = [
-  'action:restart',
-  'action:expression-review',
-  'route:logs',
-  'route:plugin-market',
-  'route:settings',
-  'external:statistics',
-]
-const dashboardDataCache = new Map<number, { timestamp: number; data: DashboardData }>()
-let botStatusCache: { timestamp: number; data: BotStatus } | null = null
-let localCacheStatsCache: { timestamp: number; data: LocalCacheStats } | null = null
-
-function loadQuickShortcutIds(): string[] {
-  const fallback = [...DEFAULT_QUICK_SHORTCUT_IDS]
-  if (typeof window === 'undefined') {
-    return fallback
-  }
-
-  const stored = localStorage.getItem(QUICK_SHORTCUT_STORAGE_KEY)
-  if (!stored) {
-    return fallback
-  }
-
-  try {
-    const parsed = JSON.parse(stored)
-    if (Array.isArray(parsed)) {
-      const ids = parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
-      return ids.length > 0 ? Array.from(new Set(ids)) : fallback
-    }
-  } catch {
-    return fallback
-  }
-
-  return fallback
-}
-
-function saveQuickShortcutIds(ids: string[]): void {
-  localStorage.setItem(QUICK_SHORTCUT_STORAGE_KEY, JSON.stringify(Array.from(new Set(ids))))
-}
-
-function getPluginShortcutId(pluginId: string, tabId?: string): string {
-  const encodedPluginId = encodeURIComponent(pluginId)
-  if (!tabId) {
-    return `plugin-config:${encodedPluginId}`
-  }
-  return `plugin-config:${encodedPluginId}:tab:${encodeURIComponent(tabId)}`
-}
-
-function parsePluginShortcutId(id: string): { pluginId: string; tabId?: string } | null {
-  if (!id.startsWith('plugin-config:')) {
-    return null
-  }
-
-  const [, encodedPluginId, marker, encodedTabId] = id.split(':')
-  if (!encodedPluginId) {
-    return null
-  }
-
-  return {
-    pluginId: decodeURIComponent(encodedPluginId),
-    tabId: marker === 'tab' && encodedTabId ? decodeURIComponent(encodedTabId) : undefined,
-  }
-}
-
-function getPluginConfigHref(pluginId: string, tabId?: string): string {
-  const params = new URLSearchParams({ plugin: pluginId })
-  if (tabId) {
-    params.set('tab', tabId)
-  }
-  return `/plugin-config?${params.toString()}`
-}
-
-function getFallbackPluginShortcut(id: string, t: TFunction): QuickShortcutDefinition | null {
-  const parsed = parsePluginShortcutId(id)
-  if (!parsed) {
-    return null
-  }
-
-  return {
-    id,
-    category: 'plugin',
-    label: parsed.tabId
-      ? t('home.pluginShortcuts.fallbackTabLabel', { plugin: parsed.pluginId, tab: parsed.tabId })
-      : t('home.pluginShortcuts.fallbackLabel', { plugin: parsed.pluginId }),
-    description: parsed.tabId
-      ? t('home.pluginShortcuts.fallbackTabDescription')
-      : t('home.pluginShortcuts.fallbackDescription'),
-    icon: Puzzle,
-    href: getPluginConfigHref(parsed.pluginId, parsed.tabId),
-  }
-}
-
-function getCachedDashboardData(hours: number): DashboardData | null {
-  const cached = dashboardDataCache.get(hours)
-  if (!cached || Date.now() - cached.timestamp > DASHBOARD_DATA_CACHE_TTL) {
-    return null
-  }
-  return cached.data
-}
-
-function getStaleDashboardData(hours: number): DashboardData | null {
-  return dashboardDataCache.get(hours)?.data ?? null
-}
-
-function getCachedBotStatus(): BotStatus | null {
-  if (!botStatusCache || Date.now() - botStatusCache.timestamp > BOT_STATUS_CACHE_TTL) {
-    return null
-  }
-  return botStatusCache.data
-}
-
-function getCachedLocalCacheStats(): LocalCacheStats | null {
-  if (!localCacheStatsCache || Date.now() - localCacheStatsCache.timestamp > LOCAL_CACHE_STATS_CACHE_TTL) {
-    return null
-  }
-  return localCacheStatsCache.data
-}
-
-const FUTURE_RETRO_PIE_COLORS = [
-  '#0b5a66',
-  '#c84d24',
-  '#8b6f2a',
-  '#2f7d6f',
-  '#9b3f58',
-  '#57704a',
-  '#284b63',
-  '#d08a2d',
-  '#6b5b95',
-  '#7a4f2b',
-]
-
-// 为饼图生成颜色；未来复古模式使用更贴近纸张、青绿边框和橘红强调色的调色盘。
-const generatePieColors = (count: number, dashboardStyle: DashboardStyle): string[] => {
-  if (dashboardStyle === 'future-retro') {
-    return Array.from({ length: count }, (_, index) => FUTURE_RETRO_PIE_COLORS[index % FUTURE_RETRO_PIE_COLORS.length])
-  }
-
-  const colors: string[] = []
-  for (let i = 0; i < count; i++) {
-    // 使用黄金角度分布色相，避免相邻颜色相似
-    const hue = (i * 137.508) % 360
-    colors.push(`hsl(${hue}, 70%, 55%)`)
-  }
-  return colors
-}
-
 // 内部实现组件
-function FeatureStatusIndicator({
-  accent,
-  detail,
-  enabled,
-  label,
-}: {
-  accent: 'green' | 'orange' | 'yellow' | 'red'
-  detail?: string
-  enabled: boolean
-  label: string
-}) {
-  const enabledColorClass = {
-    green: 'text-green-600',
-    orange: 'text-orange-600',
-    yellow: 'text-yellow-600',
-    red: 'text-red-600',
-  }[accent]
-  const enabledBarClass = {
-    green: 'bg-green-500',
-    orange: 'bg-orange-500',
-    yellow: 'bg-yellow-400',
-    red: 'bg-red-500',
-  }[accent]
+type BotRuntimeState = 'loading' | 'running' | 'stopped' | 'unknown'
 
+function BotActivityOrbit({ state }: { state: BotRuntimeState }) {
   return (
     <div
-      data-dashboard-feature-status="true"
-      data-accent={accent}
-      data-enabled={enabled ? 'true' : 'false'}
-      className={cn(
-        'flex min-h-9 w-full items-center gap-2.5 px-1 py-1 font-sans text-base font-bold transition-colors',
-        enabled ? enabledColorClass : 'text-muted-foreground/55'
-      )}
+      aria-hidden="true"
+      data-maibot-activity-orbit="true"
+      data-state={state}
+      className="relative h-[72px] w-[72px] shrink-0"
     >
-      <span
-        data-dashboard-feature-status-bar="true"
-        className={cn(
-          'h-8 w-2.5 shrink-0 rounded-[2px] transition-colors',
-          enabled ? enabledBarClass : 'bg-muted-foreground/25'
-        )}
-      />
-      <span className="min-w-0 flex-1 truncate">
-        {label}
-        {detail && <span className="ml-2 text-sm font-semibold opacity-75">· {detail}</span>}
-      </span>
+      <span />
+      <span />
+      <span />
     </div>
   )
 }
 
-function FeatureStatusLight({ enabled, label }: { enabled: boolean; label: string }) {
+function FeatureStatusLight({
+  disabledLabel,
+  enabled,
+  enabledLabel,
+  label,
+}: {
+  disabledLabel: string
+  enabled: boolean
+  enabledLabel: string
+  label: string
+}) {
   return (
     <div
       data-dashboard-feature-status="true"
       data-enabled={enabled ? 'true' : 'false'}
-      className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground"
+      role="status"
+      aria-label={`${label}：${enabled ? enabledLabel : disabledLabel}`}
+      className="text-muted-foreground inline-flex min-w-0 items-center gap-2 text-xs font-medium"
     >
       <span
         data-dashboard-feature-status-light="true"
         className={cn(
-          'h-2.5 w-2.5 rounded-full',
-          enabled ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.18)]' : 'bg-muted-foreground/30'
+          'h-2.5 w-2.5 shrink-0 rounded-none border-0 transition-[background-color,opacity]',
+          enabled ? 'bg-primary opacity-100' : 'bg-muted-foreground/25 opacity-45'
         )}
       />
-      <span>{label}</span>
+      <span className="truncate">{label}</span>
     </div>
+  )
+}
+
+function BotStatusFlipCard({
+  botRuntimeLabel,
+  botRuntimeState,
+  memoryEnabled,
+  onlineData,
+  uptime,
+  visualEnabled,
+}: {
+  botRuntimeLabel: string
+  botRuntimeState: BotRuntimeState
+  memoryEnabled: boolean
+  onlineData: TimeSeriesData[]
+  uptime: string | null
+  visualEnabled: boolean
+}) {
+  const { i18n, t } = useTranslation()
+  const prefersReducedMotion = useReducedMotion()
+  const [isFlipped, setIsFlipped] = useState(false)
+  const recentOnlineData = onlineData.slice(-24)
+  const recentOnlineSeconds = recentOnlineData.reduce(
+    (total, item) => total + item.online_seconds,
+    0
+  )
+  const formatOnlineTime = (seconds: number) => {
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.round((seconds % 3600) / 60)
+    return t('home.time.hoursMinutes', { hours, minutes })
+  }
+  const faceClassName =
+    'absolute inset-0 isolate h-full overflow-visible rounded-lg [backface-visibility:hidden] [will-change:transform]'
+  const cardClassName =
+    'relative z-10 h-full overflow-hidden transition-[border-color,background-color,box-shadow] duration-300'
+
+  return (
+    <button
+      type="button"
+      data-maibot-status-flip-card="true"
+      aria-label={t(isFlipped ? 'home.botStatus.showStatus' : 'home.botStatus.showRecentOnline')}
+      aria-pressed={isFlipped}
+      className="group focus-visible:ring-primary/55 focus-visible:ring-offset-background relative isolate block h-full min-h-[136px] w-full overflow-visible rounded-lg text-left [perspective:900px] focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+      onClick={() => setIsFlipped((current) => !current)}
+    >
+      <motion.div
+        data-maibot-status-rotor="true"
+        className="relative z-10 h-full min-h-[136px] w-full [transform-style:preserve-3d] [will-change:transform]"
+        animate={{ rotateY: prefersReducedMotion ? 0 : isFlipped ? 180 : 0 }}
+        transition={{ duration: prefersReducedMotion ? 0 : 0.46, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <motion.div
+          data-maibot-status-face="front"
+          aria-hidden={isFlipped}
+          className={faceClassName}
+          animate={{ opacity: prefersReducedMotion && isFlipped ? 0 : 1 }}
+          transition={{ duration: prefersReducedMotion ? 0.12 : 0 }}
+        >
+          <span
+            aria-hidden="true"
+            data-maibot-status-glow="true"
+            className="pointer-events-none absolute -inset-4 z-0 rounded-[1.5rem]"
+          />
+          <Card data-maibot-status-surface="true" className={cardClassName}>
+            <CardContent
+              data-home-titleless-content="true"
+              data-maibot-status-card-content="true"
+              className="p-3 sm:p-3"
+            >
+              <div className="space-y-2">
+                <div data-maibot-runtime-status="true" className="flex items-center gap-2.5">
+                  <BotActivityOrbit state={botRuntimeState} />
+                  <div className="flex min-w-0 flex-1 flex-col items-start gap-1.5">
+                    <div
+                      data-maibot-runtime-label="true"
+                      className={cn(
+                        'min-w-0 text-[32px] leading-none font-black tracking-[-0.05em] whitespace-nowrap',
+                        botRuntimeState === 'running' && 'text-primary',
+                        botRuntimeState === 'stopped' && 'text-destructive',
+                        botRuntimeState !== 'running' &&
+                          botRuntimeState !== 'stopped' &&
+                          'text-muted-foreground'
+                      )}
+                    >
+                      {botRuntimeLabel}
+                    </div>
+                    {uptime && (
+                      <div
+                        data-maibot-runtime-uptime="true"
+                        className="text-muted-foreground shrink-0 text-left text-xs font-bold tracking-tight whitespace-nowrap tabular-nums"
+                      >
+                        {uptime}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div
+                  data-maibot-feature-lights="true"
+                  className="grid grid-cols-2 gap-2 border-t pt-2"
+                >
+                  <FeatureStatusLight
+                    disabledLabel={t('home.botStatus.disabled')}
+                    enabled={visualEnabled}
+                    enabledLabel={t('home.botStatus.enabled')}
+                    label={t('home.botStatus.visualEnabled')}
+                  />
+                  <FeatureStatusLight
+                    disabledLabel={t('home.botStatus.disabled')}
+                    enabled={memoryEnabled}
+                    enabledLabel={t('home.botStatus.enabled')}
+                    label={t('home.botStatus.memoryEnabled')}
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div
+          data-maibot-status-face="back"
+          aria-hidden={!isFlipped}
+          className={faceClassName}
+          style={{ transform: prefersReducedMotion ? 'none' : 'rotateY(180deg)' }}
+          animate={{ opacity: prefersReducedMotion && !isFlipped ? 0 : 1 }}
+          transition={{ duration: prefersReducedMotion ? 0.12 : 0 }}
+        >
+          <Card data-maibot-status-surface="true" className={cardClassName}>
+            <CardContent
+              data-home-titleless-content="true"
+              className="flex h-full flex-col px-3 pt-2.5 pb-2"
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <div className="text-sm font-black tracking-tight">
+                  {t('home.botStatus.recentOnline')}
+                </div>
+                <div className="text-muted-foreground text-[10px] font-semibold tracking-wide">
+                  {t('home.botStatus.recentOnlineRange')}
+                </div>
+              </div>
+              <div
+                role="img"
+                aria-label={t('home.botStatus.recentOnlineChart')}
+                className="mt-1 min-h-0 flex-1"
+              >
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={recentOnlineData}
+                    margin={{ top: 5, right: 0, bottom: 0, left: 0 }}
+                  >
+                    <XAxis dataKey="timestamp" hide />
+                    <YAxis domain={[0, 3600]} hide />
+                    <Tooltip
+                      cursor={{ fill: 'hsl(var(--muted) / 0.32)' }}
+                      contentStyle={{
+                        background: 'hsl(var(--popover))',
+                        border: '1px solid hsl(var(--border))',
+                        borderRadius: 8,
+                        color: 'hsl(var(--popover-foreground))',
+                        fontSize: 11,
+                      }}
+                      formatter={(value) => [
+                        formatOnlineTime(Number(value)),
+                        t('home.botStatus.online'),
+                      ]}
+                      labelFormatter={(value) =>
+                        new Intl.DateTimeFormat(i18n.resolvedLanguage ?? i18n.language, {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        }).format(new Date(String(value)))
+                      }
+                    />
+                    <Bar
+                      dataKey="online_seconds"
+                      fill="hsl(var(--primary) / 0.68)"
+                      maxBarSize={7}
+                      radius={[3, 3, 1, 1]}
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex items-center justify-between gap-2 border-t pt-1.5">
+                <span className="text-muted-foreground text-[10px]">
+                  {t('home.botStatus.clickToReturn')}
+                </span>
+                <span className="text-xs font-bold tabular-nums">
+                  {t('home.botStatus.recentOnlineTotal', {
+                    time: formatOnlineTime(recentOnlineSeconds),
+                  })}
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      </motion.div>
+    </button>
   )
 }
 
@@ -405,611 +322,129 @@ function formatStorageBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
 }
 
+function compareVersions(left: string, right: string): number {
+  const parseVersion = (version: string): number[] => {
+    const match = version.replace(/^v/i, '').match(/^\d+(?:\.\d+)*/)
+    return (match?.[0] ?? '0').split('.').map((part) => Number.parseInt(part, 10))
+  }
+  const leftParts = parseVersion(left)
+  const rightParts = parseVersion(right)
+  const length = Math.max(leftParts.length, rightParts.length)
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0)
+    if (difference !== 0) return difference
+  }
+  return 0
+}
+
 function IndexPageContent() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const { themeConfig } = useContext(ThemeProviderContext)
-  const currentLocale = i18n.resolvedLanguage || i18n.language || 'zh-CN'
-  const initialDashboardData = getCachedDashboardData(DEFAULT_TIME_RANGE) ?? getStaleDashboardData(DEFAULT_TIME_RANGE)
-  const [dashboardData, setDashboardData] = useState<DashboardData | null>(initialDashboardData)
-  const [loading, setLoading] = useState(!initialDashboardData)
-  const [loadingProgress, setLoadingProgress] = useState(0)
-  const [timeRange, setTimeRange] = useState(DEFAULT_TIME_RANGE) // 默认24小时
-  const [hitokoto, setHitokoto] = useState<{ hitokoto: string; from: string } | null>(null)
-  const [hitokotoLoading, setHitokotoLoading] = useState(true)
-  const [botStatus, setBotStatus] = useState<BotStatus | null>(botStatusCache?.data ?? null)
-  const [isBotStatusLoading, setIsBotStatusLoading] = useState(!botStatusCache)
-  const [maibotStableRelease, setMaibotStableRelease] = useState<ReleaseStatus | null>(null)
-  const [maibotTestRelease, setMaibotTestRelease] = useState<ReleaseStatus | null>(null)
-  const [featureStatus, setFeatureStatus] = useState<FeatureStatus>({
-    memoryEnabled: false,
-    visualEnabled: false,
-  })
-  const [localCacheStats, setLocalCacheStats] = useState<LocalCacheStats | null>(localCacheStatsCache?.data ?? null)
-  const [isLocalCacheStatsLoading, setIsLocalCacheStatsLoading] = useState(!localCacheStatsCache)
-  const [isReviewerOpen, setIsReviewerOpen] = useState(false)
-  const [uncheckedCount, setUncheckedCount] = useState(0)
-  const [quickShortcutIds, setQuickShortcutIds] = useState<string[]>(loadQuickShortcutIds)
-  const [quickShortcutDialogOpen, setQuickShortcutDialogOpen] = useState(false)
-  const [quickShortcutSearch, setQuickShortcutSearch] = useState('')
-  const [pluginShortcuts, setPluginShortcuts] = useState<QuickShortcutDefinition[]>([])
-  const [isPluginShortcutsLoading, setIsPluginShortcutsLoading] = useState(false)
   const { triggerRestart, isRestarting } = useRestart()
-  
-  // 使用 ref 跟踪组件是否已卸载，防止内存泄漏
-  const isMountedRef = useRef(true)
 
-  // 组件卸载时清理
-  useEffect(() => {
-    isMountedRef.current = true
-    return () => {
-      isMountedRef.current = false
-    }
-  }, [])
+  // 各数据源领域 hook（页面逻辑下沉，主文件退化为薄渲染层）
+  const {
+    dashboardData,
+    error: dashboardError,
+    loading,
+    loadingProgress,
+    fetchDashboardData,
+  } = useDashboardData()
+  const { botStatus, isBotStatusLoading, fetchBotStatus } = useBotStatus()
+  const { featureStatus, fetchFeatureStatus } = useFeatureStatus()
+  const { localCacheStats, isLocalCacheStatsLoading, fetchLocalCacheStats } = useLocalCacheMetrics()
+  const { uncheckedCount, fetchReviewStats } = useReviewStats()
+  const {
+    hitokoto,
+    hitokotoLoading,
+    hitokotoSettings,
+    maibotStableRelease,
+    versionCompatibility,
+    fetchHitokoto,
+    saveHitokotoSettings,
+  } = useMaibotVersion()
+  const { pluginHomeCards } = usePluginHomeCards()
 
-  useEffect(() => {
-    let mounted = true
-
-    const loadLatestVersions = async () => {
-      try {
-        const response = await fetch('https://api.github.com/repos/Mai-with-u/MaiBot/releases?per_page=20', {
-          headers: { Accept: 'application/vnd.github+json' },
-        })
-        if (!response.ok) {
-          throw new Error(`GitHub release status ${response.status}`)
-        }
-        const releases = await response.json() as Array<{
-          draft?: boolean
-          prerelease?: boolean
-          tag_name?: string
-          html_url?: string
-        }>
-        const visibleReleases = releases.filter((release) => !release.draft)
-        const stableRelease = visibleReleases.find((release) => !release.prerelease)
-        const testRelease = visibleReleases[0]
-        if (mounted) {
-          if (stableRelease?.tag_name) {
-            setMaibotStableRelease({
-              version: String(stableRelease.tag_name).replace(/^v/i, '').trim(),
-              url: stableRelease.html_url || 'https://github.com/Mai-with-u/MaiBot/releases',
-            })
-          }
-          if (testRelease?.tag_name) {
-            setMaibotTestRelease({
-              version: String(testRelease.tag_name).replace(/^v/i, '').trim(),
-              url: testRelease.html_url || 'https://github.com/Mai-with-u/MaiBot/releases',
-            })
-          }
-        }
-      } catch (error) {
-        console.debug('检查 MaiBot 最新版本失败:', error)
-      }
-
-    }
-
-    void loadLatestVersions()
-
-    return () => {
-      mounted = false
-    }
-  }, [])
-
-  // 获取审核统计
-  const fetchReviewStats = useCallback(async () => {
-    try {
-      const result = await getReviewStats()
-      if (result.success && isMountedRef.current) {
-        setUncheckedCount(result.data.unchecked)
-      }
-    } catch (error) {
-      console.error('获取审核统计失败:', error)
-    }
-  }, [])
-
-  // 获取一言
-  const fetchHitokoto = useCallback(async () => {
-    try {
-      setHitokotoLoading(true)
-      const response = await axios.get('https://v1.hitokoto.cn/?c=a&c=b&c=c&c=d&c=h&c=i&c=k')
-      if (isMountedRef.current) {
-        setHitokoto({
-          hitokoto: response.data.hitokoto,
-          from: response.data.from || response.data.from_who || t('home.unknownSource')
-        })
-      }
-    } catch (error) {
-      console.error('获取一言失败:', error)
-      if (isMountedRef.current) {
-        setHitokoto({
-          hitokoto: t('home.hitokotoFallback'),
-          from: t('home.hitokotoFallbackFrom')
-        })
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setHitokotoLoading(false)
-      }
-    }
-  }, [t])
-
-  // 获取机器人状态
-  const fetchBotStatus = useCallback(async (force = false) => {
-    const cachedStatus = force ? null : getCachedBotStatus()
-    if (cachedStatus) {
-      setBotStatus(cachedStatus)
-      setIsBotStatusLoading(false)
-      return
-    }
-
-    setIsBotStatusLoading(true)
-    try {
-      const response = await fetchWithAuth('/api/webui/system/status')
-      if (!isMountedRef.current) return
-      if (response.ok) {
-        const data = await response.json()
-        botStatusCache = { timestamp: Date.now(), data }
-        setBotStatus(data)
-      } else if (!botStatusCache) {
-        setBotStatus(null)
-      }
-    } catch (error) {
-      console.error('获取机器人状态失败:', error)
-      if (isMountedRef.current && !botStatusCache) {
-        setBotStatus(null)
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsBotStatusLoading(false)
-      }
-    }
-  }, [])
-
-  // 重启机器人
-  const fetchFeatureStatus = useCallback(async () => {
-    try {
-      const [botConfigResult, modelConfigResult] = await Promise.all([
-        getBotConfigCached(),
-        getModelConfigCached(),
-      ])
-
-      if (!isMountedRef.current || !botConfigResult.success) return
-
-      const botPayload = botConfigResult.data as { config?: Record<string, unknown> } & Record<string, unknown>
-      const botConfig = (botPayload.config ?? botPayload) as Record<string, unknown>
-      const memorixConfig = (botConfig.a_memorix ?? {}) as Record<string, unknown>
-      const memorixPlugin = (memorixConfig.plugin ?? {}) as Record<string, unknown>
-
-      const modelPayload = modelConfigResult.success
-        ? (modelConfigResult.data as { config?: Record<string, unknown> } & Record<string, unknown>)
-        : {}
-      const modelConfig = (modelPayload.config ?? modelPayload) as Record<string, unknown>
-      const taskConfig = (modelConfig.model_task_config ?? {}) as Record<string, unknown>
-      const vlmTask = (taskConfig.vlm ?? {}) as Record<string, unknown>
-      const vlmModelList = Array.isArray(vlmTask.model_list) ? vlmTask.model_list : []
-      const hasVlmModel = vlmModelList.some((modelName) => String(modelName ?? '').trim().length > 0)
-
-      setFeatureStatus({
-        memoryEnabled: memorixPlugin.enabled === true,
-        visualEnabled: hasVlmModel,
-      })
-    } catch (error) {
-      console.error('获取功能启用状态失败:', error)
-      if (isMountedRef.current) {
-        setFeatureStatus({
-          memoryEnabled: false,
-          visualEnabled: false,
-        })
-      }
-    }
-  }, [])
-
-  const fetchLocalCacheStats = useCallback(async () => {
-    const cachedStats = getCachedLocalCacheStats()
-    if (cachedStats) {
-      setLocalCacheStats(cachedStats)
-      setIsLocalCacheStatsLoading(false)
-      return
-    }
-
-    setIsLocalCacheStatsLoading(true)
-    try {
-      const stats = await getLocalCacheStats()
-      if (isMountedRef.current) {
-        localCacheStatsCache = { timestamp: Date.now(), data: stats }
-        setLocalCacheStats(stats)
-      }
-    } catch (error) {
-      console.error('获取本地存储占用失败:', error)
-      if (isMountedRef.current && !localCacheStatsCache) {
-        setLocalCacheStats(null)
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setIsLocalCacheStatsLoading(false)
-      }
-    }
-  }, [])
+  const [isReviewerOpen, setIsReviewerOpen] = useState(false)
+  const [hitokotoEditorOpen, setHitokotoEditorOpen] = useState(false)
+  const [storageDisplayMode, setStorageDisplayMode] = useState<'size' | 'count'>('size')
 
   const handleRestart = useCallback(async () => {
     await triggerRestart()
   }, [triggerRestart])
 
+  const openReviewer = useCallback(() => setIsReviewerOpen(true), [])
+
+  const {
+    quickShortcutIds,
+    quickShortcutDialogOpen,
+    setQuickShortcutDialogOpen,
+    quickShortcutSearch,
+    setQuickShortcutSearch,
+    isPluginShortcutsLoading,
+    selectedQuickShortcuts,
+    filteredQuickShortcutOptions,
+    toggleQuickShortcut,
+    resetQuickShortcuts,
+  } = useQuickShortcuts({
+    isRestarting,
+    handleRestart,
+    uncheckedCount,
+    onOpenReviewer: openReviewer,
+  })
+
+  // 初始加载各数据源
   useEffect(() => {
-    let cancelled = false
-
-    const loadPluginShortcuts = async () => {
-      setIsPluginShortcutsLoading(true)
-      try {
-        const installedResult = await getInstalledPlugins()
-        if (!installedResult.success || cancelled) {
-          return
-        }
-
-        const enabledPlugins = installedResult.data
-          .filter((plugin) => plugin.disabled !== true && plugin.enabled !== false)
-          .filter((plugin, index, all) => index === all.findIndex((item) => item.id === plugin.id))
-
-        const shortcuts = await Promise.all(
-          enabledPlugins.map(async (plugin: InstalledPlugin): Promise<QuickShortcutDefinition[]> => {
-            const pluginName = plugin.manifest.name || plugin.id
-            const baseShortcut: QuickShortcutDefinition = {
-              id: getPluginShortcutId(plugin.id),
-              category: 'plugin',
-              label: t('home.pluginShortcuts.baseLabel', { plugin: pluginName }),
-              description: t('home.pluginShortcuts.baseDescription', { plugin: pluginName }),
-              icon: Puzzle,
-              href: getPluginConfigHref(plugin.id),
-            }
-
-            const schemaResult = await getPluginConfigSchema(plugin.id)
-            if (!schemaResult.success || !schemaResult.data) {
-              return [baseShortcut]
-            }
-
-            const schema = schemaResult.data as PluginConfigSchema
-            const tabs = schema.layout.type === 'tabs' ? schema.layout.tabs : []
-            const tabShortcuts = tabs.map((tab) => ({
-              id: getPluginShortcutId(plugin.id, tab.id),
-              category: 'plugin' as const,
-              label: `${pluginName} / ${tab.title || tab.id}`,
-              description: t('home.pluginShortcuts.tabDescription', {
-                plugin: pluginName,
-                tab: tab.title || tab.id,
-              }),
-              icon: Puzzle,
-              href: getPluginConfigHref(plugin.id, tab.id),
-            }))
-
-            return [baseShortcut, ...tabShortcuts]
-          })
-        )
-
-        if (!cancelled) {
-          setPluginShortcuts(shortcuts.flat())
-        }
-      } catch (error) {
-        console.error('加载插件快捷入口失败:', error)
-      } finally {
-        if (!cancelled) {
-          setIsPluginShortcutsLoading(false)
-        }
-      }
-    }
-
-    void loadPluginShortcuts()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const quickShortcutOptions = useMemo<QuickShortcutDefinition[]>(
-    () => [
-      {
-        id: 'action:restart',
-        category: 'system',
-        label: isRestarting ? t('home.quickActions.restarting') : t('home.quickActions.restart'),
-        description: t('home.quickActions.descriptions.restart'),
-        icon: RotateCcw,
-        action: handleRestart,
-        disabled: isRestarting,
-      },
-      {
-        id: 'action:expression-review',
-        category: 'resource',
-        label: t('home.quickActions.expressionReview'),
-        description: t('home.quickActions.descriptions.expressionReview'),
-        icon: ClipboardCheck,
-        action: () => setIsReviewerOpen(true),
-        badge: uncheckedCount > 0 ? (uncheckedCount > 99 ? '99+' : String(uncheckedCount)) : undefined,
-      },
-      {
-        id: 'route:logs',
-        category: 'monitor',
-        label: t('home.quickActions.viewLogs'),
-        description: t('home.quickActions.descriptions.viewLogs'),
-        icon: FileText,
-        href: '/logs',
-      },
-      {
-        id: 'route:plugin-market',
-        category: 'plugin',
-        label: t('home.quickActions.pluginManage'),
-        description: t('home.quickActions.descriptions.pluginManage'),
-        icon: Puzzle,
-        href: '/plugins',
-      },
-      {
-        id: 'route:plugin-config',
-        category: 'plugin',
-        label: t('home.quickActions.pluginConfig'),
-        description: t('home.quickActions.descriptions.pluginConfig'),
-        icon: Settings,
-        href: '/plugin-config',
-      },
-      {
-        id: 'route:settings',
-        category: 'system',
-        label: t('home.quickActions.systemSettings'),
-        description: t('home.quickActions.descriptions.systemSettings'),
-        icon: Settings,
-        href: '/settings',
-      },
-      {
-        id: 'route:settings-appearance',
-        category: 'system',
-        label: t('home.quickActions.appearanceSettings'),
-        description: t('home.quickActions.descriptions.appearanceSettings'),
-        icon: Settings,
-        href: '/settings?tab=appearance',
-      },
-      {
-        id: 'route:settings-local-cache',
-        category: 'system',
-        label: t('home.quickActions.localCache'),
-        description: t('home.quickActions.descriptions.localCache'),
-        icon: HardDrive,
-        href: '/settings?tab=local-cache',
-      },
-      {
-        id: 'route:model-providers',
-        category: 'config',
-        label: t('home.quickActions.modelProviders'),
-        description: t('home.quickActions.descriptions.modelProviders'),
-        icon: Settings,
-        href: '/config/model?tab=providers',
-      },
-      {
-        id: 'route:model-list',
-        category: 'config',
-        label: t('home.quickActions.modelList'),
-        description: t('home.quickActions.descriptions.modelList'),
-        icon: Settings,
-        href: '/config/model?tab=models',
-      },
-      {
-        id: 'route:model-tasks',
-        category: 'config',
-        label: t('home.quickActions.modelTasks'),
-        description: t('home.quickActions.descriptions.modelTasks'),
-        icon: Settings,
-        href: '/config/model?tab=tasks',
-      },
-      {
-        id: 'route:bot-config',
-        category: 'config',
-        label: t('home.quickActions.botConfig'),
-        description: t('home.quickActions.descriptions.botConfig'),
-        icon: Settings,
-        href: '/config/bot',
-      },
-      {
-        id: 'route:emoji',
-        category: 'resource',
-        label: t('home.quickActions.emojiManagement'),
-        description: t('home.quickActions.descriptions.emojiManagement'),
-        icon: MessageSquare,
-        href: '/resource/emoji',
-      },
-      {
-        id: 'route:expression',
-        category: 'resource',
-        label: t('home.quickActions.expressionManagement'),
-        description: t('home.quickActions.descriptions.expressionManagement'),
-        icon: MessageSquare,
-        href: '/resource/expression',
-      },
-      {
-        id: 'external:statistics',
-        category: 'external',
-        label: t('home.quickActions.statistics'),
-        description: t('home.quickActions.descriptions.statistics'),
-        icon: BarChart3,
-        href: '/maibot_statistics.html',
-        external: true,
-      },
-      ...pluginShortcuts,
-    ],
-    [handleRestart, isRestarting, pluginShortcuts, t, uncheckedCount]
-  )
-
-  const quickShortcutMap = useMemo(
-    () => new Map(quickShortcutOptions.map((shortcut) => [shortcut.id, shortcut])),
-    [quickShortcutOptions]
-  )
-
-  const selectedQuickShortcuts = useMemo(
-    () =>
-      quickShortcutIds
-        .map((id) => quickShortcutMap.get(id) ?? getFallbackPluginShortcut(id, t))
-        .filter((shortcut): shortcut is QuickShortcutDefinition => Boolean(shortcut)),
-    [quickShortcutIds, quickShortcutMap, t]
-  )
-
-  const filteredQuickShortcutOptions = useMemo(() => {
-    const query = quickShortcutSearch.trim().toLowerCase()
-    if (!query) {
-      return quickShortcutOptions
-    }
-
-    return quickShortcutOptions.filter((shortcut) =>
-      `${shortcut.label} ${shortcut.description}`.toLowerCase().includes(query)
-    )
-  }, [quickShortcutOptions, quickShortcutSearch])
-
-  const updateQuickShortcutIds = useCallback((nextIds: string[]) => {
-    const normalizedIds = Array.from(new Set(nextIds))
-    setQuickShortcutIds(normalizedIds)
-    saveQuickShortcutIds(normalizedIds)
-  }, [])
-
-  const toggleQuickShortcut = useCallback(
-    (id: string, checked: boolean) => {
-      updateQuickShortcutIds(
-        checked ? [...quickShortcutIds, id] : quickShortcutIds.filter((shortcutId) => shortcutId !== id)
-      )
-    },
-    [quickShortcutIds, updateQuickShortcutIds]
-  )
-
-  const resetQuickShortcuts = useCallback(() => {
-    updateQuickShortcutIds([...DEFAULT_QUICK_SHORTCUT_IDS])
-  }, [updateQuickShortcutIds])
-
-  const fetchDashboardData = useCallback(async (force = false) => {
-    try {
-      const cachedData = force ? null : getCachedDashboardData(timeRange)
-      if (cachedData) {
-        setDashboardData(cachedData)
-        setLoading(false)
-        setLoadingProgress(100)
-        return
-      }
-
-      const staleData = getStaleDashboardData(timeRange)
-      if (staleData) {
-        setDashboardData(staleData)
-        setLoading(false)
-        setLoadingProgress(100)
-      } else {
-        setLoading(true)
-      }
-      const response = await fetchWithAuth(`/api/webui/statistics/dashboard?hours=${timeRange}`)
-      if (!isMountedRef.current) return
-      if (response.ok) {
-        const data = await response.json()
-        dashboardDataCache.set(timeRange, { timestamp: Date.now(), data })
-        setDashboardData(data)
-      }
-      setLoading(false)
-      setLoadingProgress(100)
-    } catch (error) {
-      console.error('Failed to fetch dashboard data:', error)
-      if (isMountedRef.current) {
-        setLoading(false)
-        setLoadingProgress(100)
-      }
-    }
-  }, [timeRange])
-
-  // 伪加载进度条效果
-  useEffect(() => {
-    if (!loading) return
-
-    setLoadingProgress(0)
-    
-    // 快速到15%
-    const timer1 = setTimeout(() => setLoadingProgress(15), 200)
-    // 到30%
-    const timer2 = setTimeout(() => setLoadingProgress(30), 800)
-    // 到45%
-    const timer3 = setTimeout(() => setLoadingProgress(45), 2000)
-    // 到60%
-    const timer4 = setTimeout(() => setLoadingProgress(60), 4000)
-    // 到75%
-    const timer5 = setTimeout(() => setLoadingProgress(75), 6500)
-    // 到85%
-    const timer6 = setTimeout(() => setLoadingProgress(85), 9000)
-    // 到92%
-    const timer7 = setTimeout(() => setLoadingProgress(92), 11000)
-
-    return () => {
-      clearTimeout(timer1)
-      clearTimeout(timer2)
-      clearTimeout(timer3)
-      clearTimeout(timer4)
-      clearTimeout(timer5)
-      clearTimeout(timer6)
-      clearTimeout(timer7)
-    }
-  }, [loading])
-
-  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- 挂载时拉取仪表盘各数据源 */
     fetchDashboardData()
     fetchHitokoto()
     fetchBotStatus(true)
     fetchFeatureStatus()
     fetchLocalCacheStats()
     fetchReviewStats()
-  }, [fetchDashboardData, fetchHitokoto, fetchBotStatus, fetchFeatureStatus, fetchLocalCacheStats, fetchReviewStats])
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [
+    fetchDashboardData,
+    fetchHitokoto,
+    fetchBotStatus,
+    fetchFeatureStatus,
+    fetchLocalCacheStats,
+    fetchReviewStats,
+  ])
 
-  useEffect(() => {
-    const refreshBotStatus = () => {
-      if (isMountedRef.current) {
-        fetchBotStatus(true)
-      }
-    }
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        refreshBotStatus()
-      }
-    }
-
-    const intervalId = setInterval(refreshBotStatus, 30000)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    window.addEventListener('focus', refreshBotStatus)
-
-    return () => {
-      clearInterval(intervalId)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('focus', refreshBotStatus)
-    }
-  }, [fetchBotStatus])
-
-  if (loading || !dashboardData) {
+  if (dashboardError && !dashboardData) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-200px)]">
-        <div className="text-center space-y-6 w-full max-w-md px-4">
-          <ThinkingIllustration size="lg" className="mx-auto" />
-          <div className="space-y-2">
-            <Progress value={loadingProgress} className="h-2" />
-            <p className="text-xs text-muted-foreground">{loadingProgress}%</p>
-          </div>
-        </div>
+      <div className="flex h-[calc(100vh-200px)] items-center justify-center px-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="text-center">
+            <AlertCircle className="text-destructive mx-auto h-10 w-10" />
+            <CardTitle>仪表盘加载失败</CardTitle>
+            <CardDescription>{dashboardError}</CardDescription>
+          </CardHeader>
+          <CardContent className="flex justify-center">
+            <Button onClick={() => void fetchDashboardData(true)}>
+              <RefreshCw className="mr-2 h-4 w-4" />
+              重新加载
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     )
   }
 
-  // 解构数据，提供默认值以防止 undefined 错误
-  const { 
-    summary: rawSummary, 
-    model_stats = [], 
-    hourly_data = [], 
-    daily_data = [], 
-    recent_activity = [] 
-  } = dashboardData
-
-  // 为 summary 提供默认值
-  const summary = rawSummary ?? {
-    total_requests: 0,
-    total_cost: 0,
-    total_tokens: 0,
-    online_time: 0,
-    total_messages: 0,
-    total_replies: 0,
-    avg_response_time: 0,
-    cost_per_hour: 0,
-    tokens_per_hour: 0,
+  if (loading || !dashboardData) {
+    return (
+      <div className="flex h-[calc(100vh-200px)] items-center justify-center">
+        <div className="w-full max-w-md space-y-6 px-4 text-center">
+          <ThinkingIllustration size="lg" className="mx-auto" />
+          <div className="space-y-2">
+            <Progress value={loadingProgress} className="h-2" />
+            <p className="text-muted-foreground text-xs">{loadingProgress}%</p>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   // 格式化时间显示
@@ -1019,71 +454,6 @@ function IndexPageContent() {
     return t('home.time.hoursMinutes', { hours, minutes })
   }
 
-  // 格式化大数字（自动选择合适单位）
-  const formatNumber = (num: number): { display: string; exact: string; needsExact: boolean } => {
-    const exact = num.toLocaleString(currentLocale)
-    
-    if (num >= 1_000_000_000) {
-      return { display: `${(num / 1_000_000_000).toFixed(2)}B`, exact, needsExact: true }
-    } else if (num >= 1_000_000) {
-      return { display: `${(num / 1_000_000).toFixed(2)}M`, exact, needsExact: true }
-    } else if (num >= 10_000) {
-      return { display: `${(num / 1_000).toFixed(1)}K`, exact, needsExact: true }
-    } else if (num >= 1_000) {
-      return { display: `${(num / 1_000).toFixed(2)}K`, exact, needsExact: true }
-    }
-    return { display: exact, exact, needsExact: false }
-  }
-
-  // 格式化金额（自动选择合适单位）
-  const formatCurrency = (num: number): { display: string; exact: string; needsExact: boolean } => {
-    const exact = `¥${num.toLocaleString(currentLocale, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-    
-    if (num >= 1_000_000) {
-      return { display: `¥${(num / 1_000_000).toFixed(2)}M`, exact, needsExact: true }
-    } else if (num >= 10_000) {
-      return { display: `¥${(num / 1_000).toFixed(1)}K`, exact, needsExact: true }
-    } else if (num >= 1_000) {
-      return { display: `¥${(num / 1_000).toFixed(2)}K`, exact, needsExact: true }
-    }
-    return { display: exact, exact, needsExact: false }
-  }
-
-  // 格式化日期时间
-  const formatDateTime = (isoString: string) => {
-    const date = new Date(isoString)
-    return date.toLocaleString(currentLocale, {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  }
-
-  // 准备饼图数据（模型花费分布）- 使用黄金角度分布避免相邻颜色相似
-  const pieColors = generatePieColors(model_stats.length, themeConfig.dashboardStyle)
-  const modelPieData = model_stats.map((stat, index) => ({
-    name: stat.model_name,
-    value: stat.total_cost,
-    fill: pieColors[index],
-  }))
-
-  // 图表配置
-  const chartConfig = {
-    requests: {
-      label: t('home.charts.requests'),
-      color: 'hsl(var(--color-chart-1))',
-    },
-    cost: {
-      label: t('home.charts.cost'),
-      color: 'hsl(var(--color-chart-2))',
-    },
-    tokens: {
-      label: 'Tokens',
-      color: 'hsl(var(--color-chart-3))',
-    },
-  } satisfies ChartConfig
-
   const localCacheDirectories = localCacheStats?.directories ?? []
   const imageCacheDirectory = localCacheDirectories.find((item) => item.key === 'images')
   const emojiCacheDirectory = localCacheDirectories.find((item) => item.key === 'emoji')
@@ -1092,15 +462,32 @@ function IndexPageContent() {
   const emojiCacheSize = emojiCacheDirectory?.total_size ?? 0
   const logCacheSize = logCacheDirectory?.total_size ?? 0
   const databaseSize = localCacheStats?.database.total_size ?? 0
-  const totalStorageSize = localCacheDirectories.reduce((total, item) => total + item.total_size, 0) + databaseSize
+  const totalStorageSize =
+    localCacheDirectories.reduce((total, item) => total + item.total_size, 0) + databaseSize
+  const totalStorageFileCount =
+    localCacheDirectories.reduce((total, item) => total + item.file_count, 0) +
+    (localCacheStats?.database.files.length ?? 0)
+  const totalStorageRecordCount = localCacheDirectories.reduce(
+    (total, item) => total + item.db_records,
+    0
+  )
+  const totalStorageTableCount = localCacheStats?.database.tables.length ?? 0
   const hasLocalCacheStats = localCacheStats !== null
+  const botRuntimeState: BotRuntimeState =
+    isBotStatusLoading && !botStatus
+      ? 'loading'
+      : botStatus?.running === true
+        ? 'running'
+        : botStatus
+          ? 'stopped'
+          : 'unknown'
+  const botRuntimeLabel = t(`home.botStatus.${botRuntimeState}`)
   const storageDetails = [
     {
       key: 'images',
       label: t('home.storage.images'),
       size: imageCacheSize,
       detail: t('home.storage.files', { count: imageCacheDirectory?.file_count ?? 0 }),
-      icon: ImageIcon,
     },
     {
       key: 'emoji',
@@ -1110,14 +497,12 @@ function IndexPageContent() {
         files: emojiCacheDirectory?.file_count ?? 0,
         records: emojiCacheDirectory?.db_records ?? 0,
       }),
-      icon: Smile,
     },
     {
       key: 'logs',
       label: t('home.storage.logs'),
       size: logCacheSize,
       detail: t('home.storage.files', { count: logCacheDirectory?.file_count ?? 0 }),
-      icon: FileText,
     },
     {
       key: 'database',
@@ -1127,281 +512,66 @@ function IndexPageContent() {
         files: localCacheStats?.database.files.length ?? 0,
         tables: localCacheStats?.database.tables.length ?? 0,
       }),
-      icon: Database,
     },
   ]
 
-  return (
-    <ScrollArea className="h-full">
-      <div className="space-y-2 sm:space-y-4 p-4 sm:p-6">
-      {/* 标题和控制栏 */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold">{t('home.title')}</h1>
-        </div>
-      </div>
-
-      {/* 一言 */}
-      <div
-        className={cn(
-          'flex items-center gap-3 rounded-lg bg-muted/20 px-4 py-1',
-          themeConfig.dashboardStyle !== 'future-retro' && 'border border-dashed border-muted-foreground/30'
-        )}
-      >
-        {hitokotoLoading ? (
-          <Skeleton className="h-5 flex-1" />
-        ) : hitokoto ? (
-          <p
-            className={cn(
-              'flex-1 truncate text-muted-foreground',
-              themeConfig.dashboardStyle === 'future-retro'
-                ? 'text-[1.05rem] font-medium tracking-wide'
-                : 'text-sm italic'
-            )}
-            style={
-              themeConfig.dashboardStyle === 'future-retro'
-                ? {
-                    fontFamily:
-                      '"Cormorant Garamond", "EB Garamond", "Libre Baskerville", "Baskerville", "Palatino Linotype", "Book Antiqua", "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STSong", "SimSun", serif',
-                    textShadow: '0 0.035em 0 hsl(var(--background))',
-                  }
-                : undefined
-            }
-          >
-            "{hitokoto.hitokoto}" —— {hitokoto.from}
-          </p>
-        ) : null}
-      </div>
-
-      {/* 机器人状态和快速操作 */}
-      <div className="grid gap-4 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)]">
-        {/* 机器人状态卡片 */}
-        <Card className="lg:col-span-1">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex h-5 items-center gap-2 text-sm font-medium leading-5">
-              <FileText className="h-4 w-4" />
-              {t('home.versionCard.title')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-muted-foreground">{t('home.versionCard.mainVersion')}</span>
-                <Badge variant="secondary" className="border border-primary/20 bg-primary/10 px-2 py-0.5 font-semibold text-primary">
-                  {botStatus?.version ? `v${botStatus.version}` : t('home.versionCard.unknown')}
-                </Badge>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm text-muted-foreground">{t('home.versionCard.webuiVersion')}</span>
-                <Badge variant="secondary" className="border border-primary/20 bg-primary/10 px-2 py-0.5 font-semibold text-primary">
-                  v{APP_VERSION}
-                </Badge>
-              </div>
-              <div className="hidden">
-                <a
-                  href={maibotTestRelease?.url || 'https://github.com/Mai-with-u/MaiBot/releases'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 transition-colors hover:text-muted-foreground"
-                >
-                  {t('home.versionCard.latestVersion')}{' '}
-                  {maibotTestRelease ? `v${maibotTestRelease.version}` : t('home.versionCard.githubReleases')}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-              <div className="space-y-1 border-t border-border/50 pt-2 text-xs text-muted-foreground/60">
-                <a
-                  href={maibotStableRelease?.url || 'https://github.com/Mai-with-u/MaiBot/releases'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between gap-2 transition-colors hover:text-muted-foreground"
-                >
-                  <span>{t('home.versionCard.stableLatest')}</span>
-                  <span className="inline-flex items-center gap-1">
-                    {maibotStableRelease ? `v${maibotStableRelease.version}` : t('home.versionCard.githubReleases')}
-                    <ExternalLink className="h-3 w-3" />
-                  </span>
-                </a>
-                <a
-                  href={maibotTestRelease?.url || 'https://github.com/Mai-with-u/MaiBot/releases'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-between gap-2 transition-colors hover:text-muted-foreground"
-                >
-                  <span>{t('home.versionCard.testLatest')}</span>
-                  <span className="inline-flex items-center gap-1">
-                    {maibotTestRelease ? `v${maibotTestRelease.version}` : t('home.versionCard.githubReleases')}
-                    <ExternalLink className="h-3 w-3" />
-                  </span>
-                </a>
-
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-1">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex h-5 items-center gap-2 text-sm font-medium leading-5">
-              <Power className="h-4 w-4" />
-              {t('home.botStatus.title')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {themeConfig.dashboardStyle === 'future-retro' ? (
-                <div className="space-y-2">
-                  {isBotStatusLoading && !botStatus ? (
-                    <FeatureStatusIndicator enabled={false} accent="green" label={t('home.botStatus.loading')} />
-                  ) : botStatus?.running ? (
-                    <FeatureStatusIndicator
-                      enabled
-                      accent="green"
-                      label={t('home.botStatus.running')}
-                      detail={t('home.botStatus.uptime', { time: formatTime(botStatus.uptime) })}
-                    />
-                  ) : botStatus ? (
-                    <FeatureStatusIndicator enabled accent="red" label={t('home.botStatus.stopped')} />
-                  ) : (
-                    <FeatureStatusIndicator enabled={false} accent="green" label={t('home.botStatus.unknown')} />
-                  )}
-                  <FeatureStatusIndicator
-                    accent="orange"
-                    enabled={featureStatus.visualEnabled}
-                    label={t('home.botStatus.visualEnabled')}
-                  />
-                  <FeatureStatusIndicator
-                    accent="yellow"
-                    enabled={featureStatus.memoryEnabled}
-                    label={t('home.botStatus.memoryEnabled')}
-                  />
-                </div>
-              ) : (
-                <>
-                  <div className="flex flex-wrap items-center gap-4">
-                    <div className="flex items-center gap-2">
-                      {isBotStatusLoading && !botStatus ? (
-                        <>
-                          <div
-                            data-dashboard-status-dot="true"
-                            data-state="loading"
-                            className="h-3 w-3 rounded-full bg-muted-foreground/40 animate-pulse"
-                          />
-                          <Badge
-                            data-dashboard-status-badge="true"
-                            data-state="loading"
-                            variant="outline"
-                            className="whitespace-nowrap text-muted-foreground"
-                          >
-                            <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
-                            {t('home.botStatus.loading')}
-                          </Badge>
-                        </>
-                      ) : botStatus?.running ? (
-                        <>
-                          <div
-                            data-dashboard-status-dot="true"
-                            data-state="running"
-                            className="h-3 w-3 rounded-full bg-green-500 animate-pulse"
-                          />
-                          <Badge
-                            data-dashboard-status-badge="true"
-                            data-state="running"
-                            variant="outline"
-                            className="whitespace-nowrap text-green-600 border-green-300 bg-green-50"
-                          >
-                            <CheckCircle2 className="h-3 w-3 mr-1" />
-                            {t('home.botStatus.running')}
-                          </Badge>
-                        </>
-                      ) : botStatus ? (
-                        <>
-                          <div
-                            data-dashboard-status-dot="true"
-                            data-state="stopped"
-                            className="h-3 w-3 rounded-full bg-red-500"
-                          />
-                          <Badge
-                            data-dashboard-status-badge="true"
-                            data-state="stopped"
-                            variant="outline"
-                            className="whitespace-nowrap text-red-600 border-red-300 bg-red-50"
-                          >
-                            <AlertCircle className="h-3 w-3 mr-1" />
-                            {t('home.botStatus.stopped')}
-                          </Badge>
-                        </>
-                      ) : (
-                        <>
-                          <div
-                            data-dashboard-status-dot="true"
-                            data-state="unknown"
-                            className="h-3 w-3 rounded-full bg-muted-foreground/40"
-                          />
-                          <Badge
-                            data-dashboard-status-badge="true"
-                            data-state="unknown"
-                            variant="outline"
-                            className="whitespace-nowrap text-muted-foreground"
-                          >
-                            <AlertCircle className="h-3 w-3 mr-1" />
-                            {t('home.botStatus.unknown')}
-                          </Badge>
-                        </>
-                      )}
-                    </div>
-                    {botStatus && (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{t('home.botStatus.uptime', { time: formatTime(botStatus.uptime) })}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <FeatureStatusLight enabled={featureStatus.visualEnabled} label={t('home.botStatus.visualEnabled')} />
-                    <FeatureStatusLight enabled={featureStatus.memoryEnabled} label={t('home.botStatus.memoryEnabled')} />
-                  </div>
-                </>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* 快速操作卡片 */}
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
-            <CardTitle className="flex h-5 items-center gap-2 text-sm font-medium leading-5">
-              <Zap className="h-4 w-4" />
-              {t('home.quickActions.title')}
-            </CardTitle>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setQuickShortcutDialogOpen(true)}
-              aria-label={t('home.quickActions.customize')}
-            >
-              <Plus className="h-4 w-4" />
-            </Button>
-          </CardHeader>
-          <CardContent>
+  const homeCards: HomeCardDefinition[] = [
+    {
+      id: 'builtin:bot-status',
+      title: t('home.botStatus.title'),
+      width: 'small',
+      category: 'status',
+      source: 'builtin',
+      render: () => (
+        <BotStatusFlipCard
+          botRuntimeLabel={botRuntimeLabel}
+          botRuntimeState={botRuntimeState}
+          memoryEnabled={featureStatus.memoryEnabled}
+          onlineData={dashboardData.hourly_data}
+          uptime={
+            botStatus ? t('home.botStatus.uptime', { time: formatTime(botStatus.uptime) }) : null
+          }
+          visualEnabled={featureStatus.visualEnabled}
+        />
+      ),
+    },
+    {
+      id: 'builtin:quick-actions',
+      title: t('home.quickActions.title'),
+      width: 'medium',
+      category: 'status',
+      editLabel: t('home.quickActions.customize'),
+      onEdit: () => setQuickShortcutDialogOpen(true),
+      source: 'builtin',
+      render: () => (
+        <Card className="h-full">
+          <CardContent data-home-titleless-content="true" className="relative pt-4 sm:pt-5">
             {selectedQuickShortcuts.length === 0 ? (
-              <div className="flex flex-col gap-3 rounded-lg border border-dashed p-4 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-muted-foreground flex flex-col gap-3 rounded-lg border border-dashed p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <span>{t('home.quickActions.empty')}</span>
-                <Button variant="outline" size="sm" onClick={() => setQuickShortcutDialogOpen(true)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setQuickShortcutDialogOpen(true)}
+                >
                   {t('home.quickActions.add')}
                 </Button>
               </div>
             ) : (
-              <div className="flex flex-wrap gap-2">
+              <div data-home-quick-actions-list="true" className="flex flex-wrap gap-2">
                 {selectedQuickShortcuts.map((shortcut) => {
                   const Icon = shortcut.icon
                   const content = (
                     <>
-                      <Icon className={`h-4 w-4 ${shortcut.id === 'action:restart' && isRestarting ? 'animate-spin' : ''}`} />
-                      <span className="min-w-0 flex-1 truncate text-left">
-                        {shortcut.label}
-                      </span>
+                      <Icon
+                        className={`h-4 w-4 ${shortcut.id === 'action:restart' && isRestarting ? 'animate-spin' : ''}`}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-left">{shortcut.label}</span>
                       {shortcut.badge && (
-                        <span className="ml-1 shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-xs text-white">
+                        <span
+                          data-quick-action-badge="true"
+                          className="ml-1 shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-xs text-white"
+                        >
                           {shortcut.badge}
                         </span>
                       )}
@@ -1448,632 +618,488 @@ function IndexPageContent() {
             )}
           </CardContent>
         </Card>
-
-      </div>
-
-      <div className="grid gap-4 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px]">
-        {/* 统计概览 */}
-        <Card>
-          <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1.5">
-              <CardTitle className="flex h-5 items-center gap-2 text-sm font-medium leading-5">
-                <BarChart3 className="h-4 w-4" />
-                {t('home.stats.overviewTitle')}
-              </CardTitle>
-              <CardDescription>
-                {t('home.stats.recentPeriod', {
-                  range: timeRange < 48
-                    ? timeRange + t('home.stats.hours')
-                    : Math.floor(timeRange / 24) + t('home.stats.days'),
-                })}
-              </CardDescription>
-            </div>
-            <Tabs value={timeRange.toString()} onValueChange={(v) => setTimeRange(Number(v))}>
-              <TabsList className="grid grid-cols-3">
-                <TabsTrigger value="24">{t('home.timeRange.24h')}</TabsTrigger>
-                <TabsTrigger value="168">{t('home.timeRange.7d')}</TabsTrigger>
-                <TabsTrigger value="720">{t('home.timeRange.30d')}</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.totalRequests')}</span>
-                  <Activity className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-2xl font-bold">
-                  {formatNumber(summary.total_requests).display}
-                  {formatNumber(summary.total_requests).needsExact && (
-                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                      ({formatNumber(summary.total_requests).exact})
-                    </span>
+      ),
+    },
+    {
+      id: 'builtin:stats-overview',
+      title: t('home.stats.overviewTitle'),
+      description: t('home.stats.overviewDesc'),
+      width: 'wide',
+      allowedWidths: ['large', 'wide', 'full'],
+      preferredHeight: 'low',
+      category: 'statistics',
+      source: 'builtin',
+      render: () => <StatisticsOverviewCard />,
+    },
+    {
+      id: 'builtin:prompt-cache',
+      title: t('home.cache.title'),
+      description: t('home.cache.description'),
+      width: 'medium',
+      allowedWidths: ['medium', 'large'],
+      preferredHeight: 'low',
+      category: 'statistics',
+      source: 'builtin',
+      render: () => <PromptCacheCard />,
+    },
+    {
+      id: 'builtin:request-trend',
+      title: t('home.charts.requestTrend'),
+      description: t('home.charts.requestTrendDescCompact'),
+      width: 'large',
+      allowedWidths: ['large', 'wide', 'full'],
+      preferredHeight: 'high',
+      category: 'statistics',
+      source: 'builtin',
+      render: () => <RequestTrendCard />,
+    },
+    {
+      id: 'builtin:token-trend',
+      title: t('home.charts.tokenUsage'),
+      description: t('home.charts.tokenUsageSplitDesc'),
+      width: 'large',
+      allowedWidths: ['large', 'wide', 'full'],
+      preferredHeight: 'high',
+      category: 'statistics',
+      source: 'builtin',
+      render: () => <TokenTrendCard />,
+    },
+    {
+      id: 'builtin:cost-trend',
+      title: t('home.charts.costTrend'),
+      description: t('home.charts.costTrendDesc'),
+      width: 'large',
+      allowedWidths: ['large', 'wide', 'full'],
+      preferredHeight: 'high',
+      category: 'statistics',
+      source: 'builtin',
+      defaultHidden: true,
+      render: () => <CostTrendCard />,
+    },
+    {
+      id: 'builtin:model-distribution',
+      title: t('home.charts.modelDistribution'),
+      description: t('home.charts.modelDistributionCardDesc'),
+      width: 'large',
+      allowedWidths: ['large', 'wide'],
+      preferredHeight: 'high',
+      category: 'analysis',
+      source: 'builtin',
+      defaultHidden: true,
+      render: () => <ModelDistributionCard />,
+    },
+    {
+      id: 'builtin:model-details',
+      title: t('home.charts.modelDetails'),
+      description: t('home.charts.modelDetailsTokenDesc'),
+      width: 'large',
+      allowedWidths: ['large', 'wide', 'full'],
+      preferredHeight: 'high',
+      category: 'analysis',
+      source: 'builtin',
+      defaultHidden: true,
+      render: () => <ModelDetailsCard />,
+    },
+    {
+      id: 'builtin:daily-statistics',
+      title: t('home.charts.dailyStats'),
+      description: t('home.charts.dailyStatsRangeDesc'),
+      width: 'full',
+      allowedWidths: ['wide', 'full'],
+      preferredHeight: 'high',
+      category: 'analysis',
+      source: 'builtin',
+      defaultHidden: true,
+      render: () => <DailyStatisticsCard />,
+    },
+    {
+      id: 'builtin:storage',
+      title: t('home.storage.title'),
+      width: 'large',
+      category: 'status',
+      source: 'builtin',
+      render: () => (
+        <Card className="h-full xl:self-stretch">
+          <CardContent
+            data-home-titleless-content="true"
+            className="relative flex h-full flex-col pt-4 sm:pt-5"
+          >
+            <button
+              type="button"
+              className="text-muted-foreground/55 hover:text-muted-foreground absolute top-2.5 right-3 flex items-center gap-1 text-[10px] transition-colors"
+              aria-label={t('home.storage.switchDisplay')}
+              onClick={() => setStorageDisplayMode((mode) => (mode === 'size' ? 'count' : 'size'))}
+            >
+              <span
+                className={cn(
+                  'transition-colors',
+                  storageDisplayMode === 'size' && 'text-primary font-semibold'
+                )}
+              >
+                {t('home.storage.sizeMode')}
+              </span>
+              <span aria-hidden="true">/</span>
+              <span
+                className={cn(
+                  'transition-colors',
+                  storageDisplayMode === 'count' && 'text-primary font-semibold'
+                )}
+              >
+                {t('home.storage.countMode')}
+              </span>
+            </button>
+            <div className="flex h-full flex-col gap-3">
+              <div className="pr-20">
+                <div
+                  className={cn(
+                    'font-bold',
+                    storageDisplayMode === 'size' ? 'text-2xl' : 'text-base'
                   )}
-                </div>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.totalCost')}</span>
-                  <DollarSign className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-2xl font-bold">
-                  {formatCurrency(summary.total_cost).display}
-                  {formatCurrency(summary.total_cost).needsExact && (
-                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                      ({formatCurrency(summary.total_cost).exact})
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.cost_per_hour > 0
-                    ? t('home.stats.perHour', { value: `¥${summary.cost_per_hour.toFixed(2)}` })
-                    : t('home.stats.noData')}
-                </p>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.tokenUsage')}</span>
-                  <Database className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-2xl font-bold">
-                  {formatNumber(summary.total_tokens).display}
-                  {formatNumber(summary.total_tokens).needsExact && (
-                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                      ({formatNumber(summary.total_tokens).exact})
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {summary.tokens_per_hour > 0
-                    ? t('home.stats.perHour', { value: formatNumber(summary.tokens_per_hour).display })
-                    : t('home.stats.noData')}
-                </p>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.avgResponse')}</span>
-                  <Zap className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-2xl font-bold">{summary.avg_response_time.toFixed(2)}s</div>
-                <p className="mt-1 text-xs text-muted-foreground">{t('home.stats.avgResponseDesc')}</p>
-              </div>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.onlineTime')}</span>
-                  <Clock className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-xl font-bold">
-                  {formatTime(summary.online_time)}
-                  <span className="ml-1 text-xs font-normal text-muted-foreground">
-                    ({summary.online_time.toLocaleString()}{t('home.stats.seconds')})
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.messageProcessing')}</span>
-                  <MessageSquare className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-xl font-bold">
-                  {formatNumber(summary.total_messages).display}
-                  {formatNumber(summary.total_messages).needsExact && (
-                    <span className="ml-1 text-xs font-normal text-muted-foreground">
-                      ({formatNumber(summary.total_messages).exact})
-                    </span>
-                  )}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {t('home.stats.replied', { num: formatNumber(summary.total_replies).display })}
-                  {formatNumber(summary.total_replies).needsExact && (
-                    <span>({formatNumber(summary.total_replies).exact})</span>
-                  )}
-                </p>
-              </div>
-
-              <div className="rounded-lg border p-4">
-                <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-                  <span>{t('home.stats.costEfficiency')}</span>
-                  <TrendingUp className="h-4 w-4" />
-                </div>
-                <div className="mt-3 text-xl font-bold">
-                  {summary.total_messages > 0
-                    ? `¥${((summary.total_cost / summary.total_messages) * 100).toFixed(2)}`
-                    : '¥0.00'}
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">{t('home.stats.per100Messages')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="xl:self-stretch">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex h-5 items-center gap-2 text-sm font-medium leading-5">
-              <HardDrive className="h-4 w-4" />
-              {t('home.storage.title')}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              <div>
-                <div className="text-2xl font-bold">
+                >
                   {hasLocalCacheStats
-                    ? formatStorageBytes(totalStorageSize)
+                    ? storageDisplayMode === 'size'
+                      ? formatStorageBytes(totalStorageSize)
+                      : t('home.storage.countSummary', {
+                          files: totalStorageFileCount,
+                          records: totalStorageRecordCount,
+                          tables: totalStorageTableCount,
+                        })
                     : isLocalCacheStatsLoading
                       ? t('home.storage.reading')
                       : '-'}
                 </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {hasLocalCacheStats
-                    ? t('home.storage.summary', {
-                        image: formatStorageBytes(imageCacheSize),
-                        emoji: formatStorageBytes(emojiCacheSize),
-                        logs: formatStorageBytes(logCacheSize),
-                        database: formatStorageBytes(databaseSize),
-                      })
-                    : isLocalCacheStatsLoading
+                {!hasLocalCacheStats && (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    {isLocalCacheStatsLoading
                       ? t('home.storage.readingDescription')
                       : t('home.storage.unavailable')}
-                </p>
+                  </p>
+                )}
               </div>
               {hasLocalCacheStats && (
-                <div className="space-y-2.5">
+                <div
+                  data-home-storage-details="true"
+                  className="grid flex-1 grid-cols-1 content-center gap-x-7 gap-y-4 lg:grid-cols-2"
+                >
                   {storageDetails.map((item) => {
-                    const Icon = item.icon
                     const percent = totalStorageSize > 0 ? (item.size / totalStorageSize) * 100 : 0
                     const visiblePercent = item.size > 0 ? Math.max(percent, 2) : 0
-
                     return (
-                      <div key={item.key} className="space-y-1.5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                            <span className="truncate text-sm font-medium">{item.label}</span>
-                          </div>
-                          <span className="shrink-0 text-sm font-semibold">{formatStorageBytes(item.size)}</span>
-                        </div>
-                        <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        key={item.key}
+                        data-home-storage-row="true"
+                        className={cn(
+                          'min-w-0 text-sm',
+                          storageDisplayMode === 'size'
+                            ? 'grid grid-cols-[auto_1fr_auto] items-baseline gap-x-3 gap-y-2'
+                            : 'flex items-baseline justify-between gap-3'
+                        )}
+                      >
+                        <>
+                          <span className="shrink-0 text-sm font-bold">{item.label}</span>
+                          {storageDisplayMode === 'size' ? (
+                            <>
+                              <span className="text-primary text-base font-bold">
+                                {formatStorageBytes(item.size)}
+                              </span>
+                              <span className="text-muted-foreground shrink-0 text-right text-sm font-medium tabular-nums">
+                                {percent.toFixed(percent >= 10 ? 0 : 1)}%
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground min-w-0 truncate text-right text-sm font-medium">
+                              {item.detail}
+                            </span>
+                          )}
+                        </>
+                        {storageDisplayMode === 'size' && (
                           <div
-                            className="h-full rounded-full bg-primary transition-all"
-                            style={{ width: `${visiblePercent}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                          <span className="truncate">{item.detail}</span>
-                          <span className="shrink-0">{percent.toFixed(percent >= 10 ? 0 : 1)}%</span>
-                        </div>
+                            data-home-storage-progress="true"
+                            className="bg-muted col-span-3 h-1.5 min-w-0 overflow-hidden rounded-full"
+                          >
+                            <div
+                              className="bg-primary h-full rounded-full transition-all"
+                              style={{ width: `${visiblePercent}%` }}
+                            />
+                          </div>
+                        )}
                       </div>
                     )
                   })}
                 </div>
               )}
-              <Button variant="outline" size="sm" asChild className="w-full justify-start gap-2">
-                <Link to="/settings" search={{ tab: 'local-cache' }}>
-                  <HardDrive className="h-4 w-4" />
-                  {t('home.storage.manage')}
+              <div data-home-storage-action="true" className="mt-auto flex justify-end pt-1">
+                <Link
+                  to="/data-transfer"
+                  hash="local-cache"
+                  className="group text-muted-foreground hover:text-primary focus-visible:ring-ring inline-flex shrink-0 items-center gap-1.5 py-1 text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
+                >
+                  <span>{t('home.storage.manage')}</span>
+                  <ArrowRight className="h-3 w-3 transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transition-none" />
                 </Link>
-              </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
-      </div>
-
-      {/* 图表区域 */}
-      <Tabs defaultValue="trends" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-2 sm:grid-cols-4">
-          <TabsTrigger value="trends">{t('home.charts.tabs.trends')}</TabsTrigger>
-          <TabsTrigger value="models">{t('home.charts.tabs.models')}</TabsTrigger>
-          <TabsTrigger value="activity">{t('home.charts.tabs.activity')}</TabsTrigger>
-          <TabsTrigger value="daily">{t('home.charts.tabs.daily')}</TabsTrigger>
-        </TabsList>
-
-        {/* 趋势图表 */}
-        <TabsContent value="trends" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('home.charts.requestTrend')}</CardTitle>
-              <CardDescription>{t('home.charts.requestTrendDesc', { hours: timeRange })}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ZoomableChart aria-label={t('home.ariaLabel.requestTrend')}>
-              <ChartContainer config={chartConfig} className="h-[300px] sm:h-[400px] w-full aspect-auto">
-                <LineChart data={hourly_data}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--color-muted-foreground) / 0.2)" />
-                  <XAxis
-                    dataKey="timestamp"
-                    tickFormatter={(value) => formatDateTime(value)}
-                    angle={-45}
-                    textAnchor="end"
-                    height={60}
-                    stroke="hsl(var(--color-muted-foreground))"
-                    tick={{ fill: 'hsl(var(--color-muted-foreground))' }}
-                  />
-                  <YAxis stroke="hsl(var(--color-muted-foreground))" tick={{ fill: 'hsl(var(--color-muted-foreground))' }} />
-                  <ChartTooltip
-                    content={<ChartTooltipContent labelFormatter={(value) => formatDateTime(value as string)} />}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="requests"
-                    stroke="var(--color-requests)"
-                    strokeWidth={2}
-                  />
-                </LineChart>
-              </ChartContainer>
-              </ZoomableChart>
-            </CardContent>
-          </Card>
-
-          <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t('home.charts.costTrend')}</CardTitle>
-                <CardDescription>{t('home.charts.costTrendDesc')}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ZoomableChart aria-label={t('home.ariaLabel.costTrend')}>
-                <ChartContainer config={chartConfig} className="h-[250px] sm:h-[300px] w-full aspect-auto">
-                  <BarChart data={hourly_data}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--color-muted-foreground) / 0.2)" />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={(value) => formatDateTime(value)}
-                      angle={-45}
-                      textAnchor="end"
-                      height={60}
-                      stroke="hsl(var(--color-muted-foreground))"
-                      tick={{ fill: 'hsl(var(--color-muted-foreground))' }}
-                    />
-                    <YAxis stroke="hsl(var(--color-muted-foreground))" tick={{ fill: 'hsl(var(--color-muted-foreground))' }} />
-                    <ChartTooltip
-                      content={<ChartTooltipContent labelFormatter={(value) => formatDateTime(value as string)} />}
-                    />
-                    <Bar dataKey="cost" fill="var(--color-cost)" />
-                  </BarChart>
-                </ChartContainer>
-                </ZoomableChart>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>{t('home.charts.tokenUsage')}</CardTitle>
-                <CardDescription>{t('home.charts.tokenUsageDesc')}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ZoomableChart aria-label={t('home.ariaLabel.tokenUsage')}>
-                <ChartContainer config={chartConfig} className="h-[250px] sm:h-[300px] w-full aspect-auto">
-                  <BarChart data={hourly_data}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--color-muted-foreground) / 0.2)" />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={(value) => formatDateTime(value)}
-                      angle={-45}
-                      textAnchor="end"
-                      height={60}
-                      stroke="hsl(var(--color-muted-foreground))"
-                      tick={{ fill: 'hsl(var(--color-muted-foreground))' }}
-                    />
-                    <YAxis stroke="hsl(var(--color-muted-foreground))" tick={{ fill: 'hsl(var(--color-muted-foreground))' }} />
-                    <ChartTooltip
-                      content={<ChartTooltipContent labelFormatter={(value) => formatDateTime(value as string)} />}
-                    />
-                    <Bar dataKey="tokens" fill="var(--color-tokens)" />
-                  </BarChart>
-                </ChartContainer>
-                </ZoomableChart>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-
-        {/* 模型统计 */}
-        <TabsContent value="models" className="space-y-4">
-          <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t('home.charts.modelDistribution')}</CardTitle>
-                <CardDescription>{t('home.charts.modelDistributionDesc', { count: model_stats.length })}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer
-                  config={
-                    Object.fromEntries(
-                      model_stats.map((stat, i) => [
-                        stat.model_name,
-                        {
-                          label: stat.model_name,
-                          color: pieColors[i],
-                        },
-                      ])
-                    ) as ChartConfig
-                  }
-                  className="h-[300px] sm:h-[400px] w-full aspect-auto"
-                >
-                  <PieChart>
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Pie
-                      data={modelPieData}
-                      cx="50%"
-                      cy="50%"
-                      labelLine={false}
-                      label={({ name, percent }) => {
-                        // 只显示占比大于5%的标签，避免小块标签重叠
-                        if (percent && percent < 0.05) return ''
-                        return `${name} ${percent ? (percent * 100).toFixed(0) : 0}%`
-                      }}
-                      outerRadius={100}
-                      dataKey="value"
-                      nameKey="name"
-                    >
-                      {modelPieData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.fill} />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>{t('home.charts.modelDetails')}</CardTitle>
-                <CardDescription>{t('home.charts.modelDetailsDesc')}</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ScrollArea className="h-[300px] sm:h-[400px]">
-                  <div className="space-y-3">
-                    {model_stats.map((stat, index) => (
-                      <div
-                        key={index}
-                        className="p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <h4 className="font-semibold text-sm truncate flex-1 min-w-0">
-                            {stat.model_name}
-                          </h4>
-                          <div
-                            className="w-3 h-3 rounded-full ml-2 flex-shrink-0"
-                            style={{
-                              backgroundColor: pieColors[index],
-                            }}
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 text-xs">
-                          <div>
-                            <span className="text-muted-foreground">{t('home.charts.requestCount')}:</span>
-                            <span className="ml-1 font-medium">
-                              {stat.request_count.toLocaleString()}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">{t('home.charts.costLabel')}:</span>
-                            <span className="ml-1 font-medium">¥{stat.total_cost.toFixed(2)}</span>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">Tokens:</span>
-                            <span className="ml-1 font-medium">
-                              {(stat.total_tokens / 1000).toFixed(1)}K
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">{t('home.charts.avgTime')}:</span>
-                            <span className="ml-1 font-medium">
-                              {stat.avg_response_time.toFixed(2)}s
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
-          </div>
-        </TabsContent>
-        <TabsContent value="activity">
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('home.charts.recentActivity')}</CardTitle>
-              <CardDescription>{t('home.charts.recentActivityDesc')}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[400px] sm:h-[500px]">
-                <div className="space-y-2">
-                  {recent_activity.map((activity, index) => (
-                    <div
-                      key={index}
-                      className="p-3 sm:p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
-                    >
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium text-sm truncate">{activity.model}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {activity.request_type}
-                          </div>
-                        </div>
-                        <div className="text-xs text-muted-foreground flex-shrink-0">
-                          {formatDateTime(activity.timestamp)}
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                        <div>
-                          <span className="text-muted-foreground">Tokens:</span>
-                          <span className="ml-1">{activity.tokens}</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">{t('home.charts.costLabel')}:</span>
-                          <span className="ml-1">¥{activity.cost.toFixed(4)}</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">{t('home.charts.timeCost')}:</span>
-                          <span className="ml-1">{activity.time_cost.toFixed(2)}s</span>
-                        </div>
-                        <div>
-                          <span className="text-muted-foreground">{t('home.charts.status')}:</span>
-                          <span
-                            className={`ml-1 ${activity.status === 'success' ? 'text-green-600' : 'text-red-600'}`}
-                          >
-                            {activity.status}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* 日统计 */}
-        <TabsContent value="daily">
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('home.charts.dailyStats')}</CardTitle>
-              <CardDescription>{t('home.charts.dailyStatsDesc')}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer
-                config={{
-                  requests: {
-                    label: t('home.charts.requests'),
-                    color: 'hsl(var(--color-chart-1))',
-                  },
-                  cost: {
-                    label: t('home.charts.cost'),
-                    color: 'hsl(var(--color-chart-2))',
-                  },
-                }}
-                className="h-[400px] sm:h-[500px] w-full aspect-auto"
-              >
-                <BarChart data={daily_data}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--color-muted-foreground) / 0.2)" />
-                  <XAxis
-                    dataKey="timestamp"
-                    tickFormatter={(value) => {
-                      const date = new Date(value)
-                      return new Intl.DateTimeFormat(currentLocale, {
-                        month: 'numeric',
-                        day: 'numeric',
-                      }).format(date)
-                    }}
-                    stroke="hsl(var(--color-muted-foreground))"
-                    tick={{ fill: 'hsl(var(--color-muted-foreground))' }}
-                  />
-                  <YAxis yAxisId="left" stroke="hsl(var(--color-muted-foreground))" tick={{ fill: 'hsl(var(--color-muted-foreground))' }} />
-                  <YAxis yAxisId="right" orientation="right" stroke="hsl(var(--color-muted-foreground))" tick={{ fill: 'hsl(var(--color-muted-foreground))' }} />
-                  <ChartTooltip
-                    content={
-                      <ChartTooltipContent
-                        labelFormatter={(value) => {
-                          const date = new Date(value as string)
-                          return date.toLocaleDateString(currentLocale)
-                        }}
-                      />
-                    }
-                  />
-                  <ChartLegend content={<ChartLegendContent />} />
-                  <Bar yAxisId="left" dataKey="requests" fill="var(--color-requests)" />
-                  <Bar yAxisId="right" dataKey="cost" fill="var(--color-cost)" />
-                </BarChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-
-      <Dialog open={quickShortcutDialogOpen} onOpenChange={setQuickShortcutDialogOpen}>
-        <DialogContent style={{ '--dialog-width': '46rem' } as CSSProperties}>
-          <DialogHeader>
-            <DialogTitle>{t('home.quickActions.dialog.title')}</DialogTitle>
-            <DialogDescription>
-              {t('home.quickActions.dialog.description')}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogBody viewportClassName="max-h-[60vh]">
-            <div className="space-y-4 pr-1">
-              <Input
-                value={quickShortcutSearch}
-                onChange={(event) => setQuickShortcutSearch(event.target.value)}
-                placeholder={t('home.quickActions.dialog.searchPlaceholder')}
-              />
-              <div className="space-y-2">
-                {filteredQuickShortcutOptions.map((shortcut) => {
-                  const Icon = shortcut.icon
-                  const checked = quickShortcutIds.includes(shortcut.id)
-                  const checkboxId = `quick-shortcut-${shortcut.id}`
-                  return (
-                    <label
-                      key={shortcut.id}
-                      htmlFor={checkboxId}
-                      className="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors hover:bg-accent/40"
-                    >
-                      <Checkbox
-                        id={checkboxId}
-                        className="mt-0.5"
-                        checked={checked}
-                        onCheckedChange={(value) => toggleQuickShortcut(shortcut.id, value === true)}
-                      />
-                      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1">
-                        <span className="flex flex-wrap items-center gap-2">
-                          <span className="font-medium">{shortcut.label}</span>
-                          <Badge variant="outline" className="text-[10px]">
-                            {t(`home.quickActions.categories.${shortcut.category}`)}
-                          </Badge>
-                        </span>
-                        <span className="mt-1 block text-sm text-muted-foreground">
-                          {shortcut.description}
-                        </span>
-                      </span>
-                    </label>
-                  )
-                })}
-                {filteredQuickShortcutOptions.length === 0 && (
-                  <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                    {isPluginShortcutsLoading
-                      ? t('home.quickActions.dialog.loadingPluginEntries')
-                      : t('home.quickActions.dialog.noMatches')}
-                  </div>
+      ),
+    },
+    {
+      id: 'builtin:hitokoto',
+      title: t('home.hitokoto.title'),
+      width: 'full',
+      category: 'status',
+      editLabel: t('home.hitokoto.edit'),
+      onEdit: () => setHitokotoEditorOpen(true),
+      source: 'builtin',
+      variant: 'separator',
+      render: () => (
+        <div
+          data-home-hitokoto="true"
+          className={cn(
+            'bg-muted/20 flex h-full w-full items-center gap-3 rounded-lg px-4',
+            themeConfig.dashboardStyle !== 'future-retro' &&
+              'border-muted-foreground/30 border border-dashed'
+          )}
+        >
+          <div className="min-w-0 flex-1">
+            {hitokotoLoading ? (
+              <Skeleton className="h-5 w-full" />
+            ) : hitokoto ? (
+              <p
+                className={cn(
+                  'text-muted-foreground truncate',
+                  themeConfig.dashboardStyle === 'future-retro'
+                    ? 'text-[1.05rem] font-medium tracking-wide'
+                    : 'text-sm italic'
                 )}
+                style={
+                  themeConfig.dashboardStyle === 'future-retro'
+                    ? {
+                        fontFamily: '"MaiRetroQuote", "Noto Serif SC", "SimSun", serif',
+                        textShadow: '0 0.035em 0 hsl(var(--background))',
+                      }
+                    : undefined
+                }
+              >
+                "{hitokoto.hitokoto}"{hitokoto.from ? ` —— ${hitokoto.from}` : ''}
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            data-home-hitokoto-edit="true"
+            aria-label={t('home.hitokoto.edit')}
+            title={t('home.hitokoto.edit')}
+            className="text-muted-foreground/55 hover:bg-accent/50 hover:text-foreground focus-visible:ring-ring flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:outline-none"
+            onClick={() => setHitokotoEditorOpen(true)}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ),
+    },
+  ]
+  const firstRowCardIds = ['builtin:bot-status', 'builtin:quick-actions', 'builtin:storage']
+  const hitokotoCardId = 'builtin:hitokoto'
+  const orderedHomeCards = [
+    ...firstRowCardIds
+      .map((id) => homeCards.find((card) => card.id === id))
+      .filter((card): card is HomeCardDefinition => card !== undefined),
+    ...homeCards.filter((card) => card.id === hitokotoCardId),
+    ...homeCards.filter((card) => !firstRowCardIds.includes(card.id) && card.id !== hitokotoCardId),
+  ]
+  const maibotUpdateAvailable = Boolean(
+    botStatus?.version &&
+    maibotStableRelease &&
+    compareVersions(maibotStableRelease.version, botStatus.version) > 0
+  )
+  const versionsMismatch =
+    versionCompatibility?.status !== undefined && versionCompatibility.status !== 'compatible'
+  return (
+    <ScrollArea className="h-full">
+      <div data-home-page="true" className="space-y-2 p-4 sm:space-y-4 sm:p-6">
+        {dashboardError && (
+          <Card className="border-destructive/50 bg-destructive/5">
+            <CardContent className="flex flex-col gap-3 pt-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-destructive flex min-w-0 items-center gap-2 text-sm">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span className="truncate">{dashboardError}</span>
               </div>
-            </div>
-          </DialogBody>
-          <DialogFooter>
-            <Button variant="outline" onClick={resetQuickShortcuts}>
-              {t('home.quickActions.dialog.restoreDefault')}
-            </Button>
-            <Button onClick={() => setQuickShortcutDialogOpen(false)}>
-              {t('home.quickActions.dialog.done')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => void fetchDashboardData(true)}
+              >
+                <RefreshCw className="mr-2 h-4 w-4" />
+                重新加载
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+        <div
+          data-home-command-strip="true"
+          className={cn(
+            'text-primary flex flex-wrap items-center gap-x-7 gap-y-2 font-sans font-black tracking-[0.12em] uppercase',
+            versionsMismatch && 'text-amber-600 dark:text-amber-400'
+          )}
+        >
+          <button
+            type="button"
+            data-home-version-button="true"
+            className="inline-flex items-baseline gap-2"
+            onClick={() => openUpdateNotice('maibot')}
+          >
+            <span className="text-[11px] tracking-[0.2em] opacity-70">
+              {t('home.versionCard.maibotVersion')}
+            </span>
+            <span className="text-base">
+              {botStatus?.version ? `V${botStatus.version}` : t('home.versionCard.unknown')}
+            </span>
+          </button>
+          <button
+            type="button"
+            data-home-version-button="true"
+            className="inline-flex items-baseline gap-2"
+            onClick={() => openUpdateNotice('console')}
+          >
+            <span className="text-[11px] tracking-[0.2em] opacity-70">
+              {t('home.versionCard.consoleVersion')}
+            </span>
+            <span className="text-base">V{APP_VERSION}</span>
+          </button>
+          {maibotUpdateAvailable && maibotStableRelease && (
+            <a
+              href={maibotStableRelease.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sm text-sky-600 hover:underline dark:text-sky-400"
+            >
+              {t('home.versionCard.updateAvailable')} V{maibotStableRelease.version}
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
+          {versionsMismatch && <span className="text-sm">{t('home.versionCard.mismatch')}</span>}
+          <span
+            aria-hidden="true"
+            data-home-version-stripes="true"
+            className="ml-auto hidden min-w-24 flex-1 basis-40"
+          >
+            <svg
+              data-home-version-spectrum="true"
+              viewBox="0 0 1100 180"
+              preserveAspectRatio="none"
+            >
+              <path data-spectrum-line="green" d="M0 84 H740 C850 84 880 18 1010 18 H1100" />
+              <path data-spectrum-line="gold" d="M0 90 H1100" />
+              <path data-spectrum-line="orange" d="M0 96 H740 C850 96 880 162 1010 162 H1100" />
+            </svg>
+          </span>
+        </div>
 
-      {/* 重启遮罩层 */}
-      <RestartOverlay />
+        <HomeCardManager
+          cards={orderedHomeCards}
+          pluginCards={pluginHomeCards}
+          controlsPortalId="home-card-controls-bottom"
+        />
 
-      {/* 表达方式审核器 */}
-      <ExpressionReviewer
-        open={isReviewerOpen}
-        onOpenChange={(open) => {
-          setIsReviewerOpen(open)
-          if (!open) {
-            // 关闭审核器时刷新统计
-            fetchReviewStats()
-          }
-        }}
-      />
-    </div>
+        <div id="home-card-controls-bottom" className="flex justify-end pt-2" />
+
+        <Dialog open={quickShortcutDialogOpen} onOpenChange={setQuickShortcutDialogOpen}>
+          <DialogContent style={{ '--dialog-width': '46rem' } as CSSProperties}>
+            <DialogHeader>
+              <DialogTitle>{t('home.quickActions.dialog.title')}</DialogTitle>
+              <DialogDescription>{t('home.quickActions.dialog.description')}</DialogDescription>
+            </DialogHeader>
+            <DialogBody viewportClassName="max-h-[60vh]">
+              <div className="space-y-4 pr-1">
+                <Input
+                  value={quickShortcutSearch}
+                  onChange={(event) => setQuickShortcutSearch(event.target.value)}
+                  placeholder={t('home.quickActions.dialog.searchPlaceholder')}
+                />
+                <div className="space-y-2">
+                  {filteredQuickShortcutOptions.map((shortcut) => {
+                    const Icon = shortcut.icon
+                    const checked = quickShortcutIds.includes(shortcut.id)
+                    const checkboxId = `quick-shortcut-${shortcut.id}`
+                    return (
+                      <label
+                        key={shortcut.id}
+                        htmlFor={checkboxId}
+                        className="hover:bg-accent/40 flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors"
+                      >
+                        <Checkbox
+                          id={checkboxId}
+                          className="mt-0.5"
+                          checked={checked}
+                          onCheckedChange={(value) =>
+                            toggleQuickShortcut(shortcut.id, value === true)
+                          }
+                        />
+                        <Icon className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="font-medium">{shortcut.label}</span>
+                            <Badge variant="outline" className="text-[10px]">
+                              {t(`home.quickActions.categories.${shortcut.category}`)}
+                            </Badge>
+                          </span>
+                          <span className="text-muted-foreground mt-1 block text-sm">
+                            {shortcut.description}
+                          </span>
+                        </span>
+                      </label>
+                    )
+                  })}
+                  {filteredQuickShortcutOptions.length === 0 && (
+                    <div className="text-muted-foreground rounded-lg border border-dashed p-6 text-center text-sm">
+                      {isPluginShortcutsLoading
+                        ? t('home.quickActions.dialog.loadingPluginEntries')
+                        : t('home.quickActions.dialog.noMatches')}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="outline" onClick={resetQuickShortcuts}>
+                {t('home.quickActions.dialog.restoreDefault')}
+              </Button>
+              <Button onClick={() => setQuickShortcutDialogOpen(false)}>
+                {t('home.quickActions.dialog.done')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {hitokotoEditorOpen && (
+          <HitokotoEditorDialog
+            initialSettings={hitokotoSettings}
+            onOpenChange={setHitokotoEditorOpen}
+            onSave={saveHitokotoSettings}
+          />
+        )}
+
+        {/* 重启遮罩层 */}
+        <RestartOverlay />
+
+        {/* 表达方式审核器 */}
+        {isReviewerOpen && (
+          <Suspense fallback={null}>
+            <ExpressionReviewer
+              open
+              onOpenChange={(open) => {
+                setIsReviewerOpen(open)
+                if (!open) {
+                  // 关闭审核器时刷新统计
+                  fetchReviewStats()
+                }
+              }}
+            />
+          </Suspense>
+        )}
+      </div>
     </ScrollArea>
   )
 }

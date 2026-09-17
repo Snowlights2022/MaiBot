@@ -1,6 +1,6 @@
 """聊天消息入口与主链路调度。"""
 
-from contextlib import suppress
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 import os
@@ -9,17 +9,24 @@ import traceback
 from maim_message import MessageBase
 
 from src.chat.heart_flow.heartflow_message_processor import HeartFCMessageReceiver
+from src.chat.heart_flow.heartflow_manager import heartflow_manager
 from src.common.logger import get_logger
 from src.common.utils.utils_message import MessageUtils
 from src.common.utils.utils_session import SessionUtils
 from src.config.config import global_config
 from src.core.announcement_manager import global_announcement_manager
+from src.core.local_operator import has_command_permission, has_plugin_management_permission, is_local_operator
 from src.platform_io.route_key_factory import RouteKeyFactory
 from src.plugin_runtime.component_query import component_query_service
 from src.plugin_runtime.hook_payloads import deserialize_session_message, serialize_session_message
 from src.plugin_runtime.hook_schema_utils import build_object_schema
 from src.plugin_runtime.host.hook_dispatcher import HookDispatchResult
 from src.plugin_runtime.host.hook_spec_registry import HookSpec, HookSpecRegistry
+from src.maisaka.context.clear_context import (
+    CLEAR_CONTEXT_COMMAND,
+    is_clear_context_command,
+    mark_clear_context_command,
+)
 
 from .chat_manager import chat_manager
 from .image_receive_compressor import process_received_images_in_message
@@ -265,6 +272,25 @@ class ChatBot:
                     logger.info("用户禁用的命令，跳过处理")
                     return False, None, True
 
+                if command_info.permission == "operator" and not has_command_permission(
+                    f"{plugin_name}.{command_name}",
+                    message.platform,
+                    message.message_info.user_info.user_id,
+                    message.session_id,
+                    global_config.plugin.permission,
+                    global_config.plugin.command_permissions,
+                    local_operator=is_local_operator(
+                        message.platform,
+                        message.message_info.additional_config,
+                    ),
+                ):
+                    from src.services.send_service import text_to_stream
+
+                    self._mark_command_message(message, intercept_message_level=1)
+                    await self._store_intercepted_command_message(message)
+                    await text_to_stream("你没有权限使用此命令。", message.session_id, storage_message=False)
+                    return True, "没有权限", False
+
                 message.is_command = True
                 before_result, message = await self._invoke_message_hook(
                     "chat.command.before_execute",
@@ -341,6 +367,223 @@ class ChatBot:
             return False, None, True  # 出错时继续处理消息
 
     @staticmethod
+    def _is_command_candidate(message: SessionMessage) -> bool:
+        """判断消息是否会进入内置或插件命令链。"""
+
+        command_text = (message.processed_plain_text or "").strip()
+        if command_text in {"/offline", "/online"}:
+            return True
+
+        message_is_local_operator = is_local_operator(
+            message.platform,
+            message.message_info.additional_config,
+        )
+        if message_is_local_operator:
+            if command_text == CLEAR_CONTEXT_COMMAND or command_text.startswith(f"{CLEAR_CONTEXT_COMMAND} "):
+                return True
+        elif global_config.debug.enable_clear_context_command and is_clear_context_command(command_text):
+            return True
+
+        command_result = component_query_service.find_command_by_text(command_text)
+        if command_result is None:
+            return False
+        _, _, command_info = command_result
+        return not (
+            message.session_id
+            and command_info.name in global_announcement_manager.get_disabled_chat_commands(message.session_id)
+        )
+
+    async def _process_clear_context_command(self, message: SessionMessage) -> bool:
+        """处理内置 ``/clear`` 指令并清空当前聊天流的 Maisaka 上下文。"""
+
+        message_is_local_operator = is_local_operator(
+            message.platform,
+            message.message_info.additional_config,
+        )
+        if not global_config.debug.enable_clear_context_command and not message_is_local_operator:
+            return False
+
+        command_text = (message.processed_plain_text or "").strip()
+        if message_is_local_operator:
+            if command_text != CLEAR_CONTEXT_COMMAND and not command_text.startswith(f"{CLEAR_CONTEXT_COMMAND} "):
+                return False
+        elif not is_clear_context_command(command_text):
+            return False
+
+        if not has_command_permission(
+            "core.clear",
+            message.platform,
+            message.message_info.user_info.user_id,
+            message.session_id,
+            global_config.plugin.permission,
+            global_config.plugin.command_permissions,
+            local_operator=message_is_local_operator,
+        ):
+            from src.services.send_service import text_to_stream
+
+            self._mark_command_message(message, intercept_message_level=1)
+            await self._store_intercepted_command_message(message)
+            await text_to_stream("你没有权限使用此命令。", message.session_id, storage_message=False)
+            return True
+
+        from src.services.send_service import text_to_stream
+
+        if message_is_local_operator:
+            target_name = command_text[len(CLEAR_CONTEXT_COMMAND) :].strip()
+            if not target_name:
+                self._mark_command_message(message, intercept_message_level=1)
+                await self._store_intercepted_command_message(message)
+                await text_to_stream(
+                    "控制台中的 /clear 必须指定聊天名，请输入 /clear 后按 Tab 选择。",
+                    message.session_id,
+                    storage_message=False,
+                )
+                return True
+
+            session_options = chat_manager.get_named_session_options(
+                excluded_platforms={message.platform},
+            )
+            target_session_id = session_options.get(target_name)
+            if target_session_id is None:
+                self._mark_command_message(message, intercept_message_level=1)
+                await self._store_intercepted_command_message(message)
+                await text_to_stream(
+                    f"未找到聊天“{target_name}”，请输入 /clear 后按 Tab 选择。",
+                    message.session_id,
+                    storage_message=False,
+                )
+                return True
+
+            marker_message = deepcopy(message)
+            marker_message.session_id = target_session_id
+            marker_message.processed_plain_text = CLEAR_CONTEXT_COMMAND
+            mark_clear_context_command(marker_message)
+            await MessageUtils.store_message_to_db_async(marker_message)
+            had_runtime = await heartflow_manager.clear_chat_history_context(target_session_id)
+            sent = await text_to_stream(
+                f"已清空“{target_name}”的 Maisaka 历史上下文。",
+                message.session_id,
+                storage_message=False,
+            )
+            if not sent:
+                logger.warning(
+                    f"目标聊天上下文已清空，但控制台确认消息发送失败: "
+                    f"target_session_id={target_session_id}"
+                )
+            logger.info(
+                f"已通过控制台 /clear 清空 Maisaka 历史上下文: "
+                f"chat_name={target_name} session_id={target_session_id} 运行时是否存在={had_runtime}"
+            )
+            return True
+
+        mark_clear_context_command(message)
+        await MessageUtils.store_message_to_db_async(message)
+        had_runtime = await heartflow_manager.clear_chat_history_context(message.session_id)
+
+        sent = await text_to_stream(
+            "已清空当前聊天的 Maisaka 历史上下文。",
+            message.session_id,
+            storage_message=False,
+        )
+        if not sent:
+            logger.warning(f"Maisaka 历史上下文已清空，但确认消息发送失败: session_id={message.session_id}")
+        logger.info(
+            f"已通过 /clear 清空 Maisaka 历史上下文: "
+            f"session_id={message.session_id} 运行时是否存在={had_runtime}"
+        )
+        return True
+
+    async def _process_adapter_lifecycle_command(self, message: SessionMessage) -> bool:
+        """处理仅供本地终端使用的适配器上线与离线指令。"""
+
+        command = (message.processed_plain_text or "").strip()
+        if command not in {"/offline", "/online"}:
+            return False
+
+        from src.services.send_service import text_to_stream
+
+        message_is_local_operator = is_local_operator(
+            message.platform,
+            message.message_info.additional_config,
+        )
+        if not has_plugin_management_permission(
+            message.platform,
+            message.message_info.user_info.user_id,
+            global_config.plugin.permission,
+            local_operator=message_is_local_operator,
+        ):
+            self._mark_command_message(message, intercept_message_level=1)
+            await self._store_intercepted_command_message(message)
+
+            await text_to_stream(
+                "你没有权限使用适配器管理命令。",
+                message.session_id,
+                storage_message=False,
+            )
+            logger.warning(
+                f"已拒绝未授权的适配器管理指令: "
+                f"platform={message.platform} user_id={message.message_info.user_info.user_id} command={command}"
+            )
+            return True
+
+        self._mark_command_message(message, intercept_message_level=1)
+        await self._store_intercepted_command_message(message)
+
+        remote_offline_command = command == "/offline" and not message_is_local_operator
+        if remote_offline_command:
+            sent = await text_to_stream(
+                "正在关闭全部适配器插件；操作结果将记录在主程序日志中。恢复适配器请使用本地控制台 /online。",
+                message.session_id,
+                storage_message=False,
+            )
+            if not sent:
+                logger.warning(
+                    f"适配器关闭前确认消息发送失败，已取消执行: session_id={message.session_id}"
+                )
+                return True
+
+        runtime_manager = self._get_runtime_manager()
+        if command == "/offline":
+            result = await runtime_manager.take_adapters_offline()
+            if result.changed_plugin_ids:
+                response = f"已关闭适配器插件：{', '.join(result.changed_plugin_ids)}。"
+            elif result.failed_plugins:
+                response = "适配器插件关闭失败。"
+            elif result.pending_plugin_ids:
+                response = "适配器插件已处于离线状态。"
+            else:
+                response = "当前没有已加载的适配器插件。"
+        else:
+            result = await runtime_manager.bring_adapters_online()
+            if result.changed_plugin_ids:
+                response = f"已恢复适配器插件：{', '.join(result.changed_plugin_ids)}。"
+            elif result.failed_plugins:
+                response = "适配器插件恢复失败。"
+            else:
+                response = "当前没有等待恢复的适配器插件。"
+
+        if result.failed_plugins:
+            failure_details = "；".join(
+                f"{plugin_id}: {reason}"
+                for plugin_id, reason in sorted(result.failed_plugins.items())
+            )
+            response = f"{response} 失败详情：{failure_details}"
+
+        if not remote_offline_command:
+            sent = await text_to_stream(
+                response,
+                message.session_id,
+                storage_message=False,
+            )
+            if not sent:
+                logger.warning(f"适配器运行状态已变更，但确认消息发送失败: session_id={message.session_id}")
+        logger.info(
+            f"已执行适配器管理指令 {command}: "
+            f"source={'local_console' if message_is_local_operator else message.platform} result={response}"
+        )
+        return True
+
+    @staticmethod
     def _mark_command_message(message: SessionMessage, intercept_message_level: int) -> None:
         """标记消息已经被命令链消费。
 
@@ -387,69 +630,28 @@ class ChatBot:
         return True
 
     async def handle_notice_message(self, message: SessionMessage) -> bool:
-        """处理通知类消息。
+        """处理通知类消息（戳一戳、撤回、禁言、入群退群等）。
+
+        适配器通过 ``is_notify`` 字段标识通知消息，同时通过
+        ``additional_config`` 中的 ``napcat_notice_type``、``napcat_notice_sub_type``
+        和 ``napcat_notice_payload`` 携带原始通知事件的详细信息。
 
         Args:
-            message: 当前通知消息。
+            message: 当前通知消息（已由适配器设置 ``is_notify=True``）。
 
         Returns:
-            bool: 当前消息是否为通知消息。
+            bool: 当前消息是通知消息时返回 ``True``，否则返回 ``False``。
         """
 
-        if message.message_id != "notice":
+        if not message.is_notify:
             return False
 
-        message.is_notify = True
-        logger.debug("notice消息")
-        try:
-            seg = getattr(message, "message_segment", None)  # SessionMessage 没有 message_segment
-            mi = message.message_info
-            sub_type = None
-            scene = None
-            msg_id = None
-            recalled: Dict[str, Any] = {}
-            recalled_id = None
+        additional_config = message.message_info.additional_config
+        if not isinstance(additional_config, dict):
+            return False
 
-            seg_data = getattr(seg, "data", None)
-            if getattr(seg, "type", None) == "notify" and isinstance(seg_data, dict):
-                sub_type = seg_data.get("sub_type")
-                scene = seg_data.get("scene")
-                msg_id = seg_data.get("message_id")
-                recalled = seg_data.get("recalled_user_info") or {}
-                if isinstance(recalled, dict):
-                    recalled_id = recalled.get("user_id")
-
-            op = mi.user_info
-            gid = mi.group_info.group_id if mi.group_info else None
-
-            # 撤回事件打印；无法获取被撤回者则省略
-            if sub_type == "recall":
-                op_name = (
-                    getattr(op, "user_cardname", None)
-                    or getattr(op, "user_nickname", None)
-                    or str(getattr(op, "user_id", None))
-                )
-                recalled_name = None
-                with suppress(Exception):
-                    if isinstance(recalled, dict):
-                        recalled_name = (
-                            recalled.get("user_cardname")
-                            or recalled.get("user_nickname")
-                            or str(recalled.get("user_id"))
-                        )
-
-                if recalled_name and str(recalled_id) != str(getattr(op, "user_id", None)):
-                    logger.info(f"{op_name} 撤回了 {recalled_name} 的消息")
-                else:
-                    logger.info(f"{op_name} 撤回了消息")
-            else:
-                logger.debug(
-                    f"[notice] sub_type={sub_type} scene={scene} op={getattr(op, 'user_nickname', None)}({getattr(op, 'user_id', None)}) "
-                    f"gid={gid} msg_id={msg_id} recalled={recalled_id}"
-                )
-        except Exception:
-            logger.info("[notice] (简略) 收到一条通知事件")
-
+        # 通知消息由适配器完整格式化（含 [事件-xxx] 前缀及详情），
+        # 此处仅做类型识别，具体文本由消息正常链路输出，避免重复日志。
         return True
 
     async def echo_message_process(self, raw_data: Dict[str, Any]) -> None:
@@ -570,18 +772,8 @@ class ChatBot:
             if isinstance(additional_config, dict):
                 account_id, scope = RouteKeyFactory.extract_components(additional_config)
 
-            # TODO: 修复事件预处理部分
-            # continue_flag, modified_message = await events_manager.handle_mai_events(
-            #     EventType.ON_MESSAGE_PRE_PROCESS, message
-            # )
-            # if not continue_flag:
-            #     return
-            # if modified_message and modified_message._modify_flags.modify_message_segments:
-            #     message.message_segment = Seg(type="seglist", data=modified_message.message_segments)
-
-            # TODO: notice消息处理
-            # if await self.handle_notice_message(message):
-            #     pass
+            # 通知消息（戳一戳、撤回、禁言等）由适配器标记 is_notify=True，
+            await self.handle_notice_message(message)
 
             # 处理消息内容，识别表情包等二进制数据并转化为文本描述。
             # 如果 Maisaka 需要直接消费图片，会在后续构建 prompt 时按需回填图片二进制数据，
@@ -604,20 +796,21 @@ class ChatBot:
 
             # 平台层的 @ 检测由底层 is_mentioned_bot_in_message 统一处理；此处不做用户名硬编码匹配
 
-            # 过滤检查
+            # 已注册命令优先进入命令链；普通消息仍需先通过聊天过滤。
             text = message.processed_plain_text or ""
-            is_banned, word = MessageUtils.check_ban_words(text)
-            if is_banned:
-                chat_name = group_info.group_name if group_info else "私聊"
-                logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
-                logger.info(f"[过滤词识别]消息中含有{word}，filtered")
-                return
-            is_banned_regex, pattern = MessageUtils.check_ban_regex(text)
-            if is_banned_regex:
-                chat_name = group_info.group_name if group_info else "私聊"
-                logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
-                logger.info(f"[正则表达式过滤]消息匹配到{pattern}，filtered")
-                return
+            if not self._is_command_candidate(message):
+                is_banned, word = MessageUtils.check_ban_words(text)
+                if is_banned:
+                    chat_name = group_info.group_name if group_info else "私聊"
+                    logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
+                    logger.info(f"[过滤词识别]消息中含有{word}，filtered")
+                    return
+                is_banned_regex, pattern = MessageUtils.check_ban_regex(text)
+                if is_banned_regex:
+                    chat_name = group_info.group_name if group_info else "私聊"
+                    logger.info(f"[{chat_name}]{user_info.user_nickname}:{text}")
+                    logger.info(f"[正则表达式过滤]消息匹配到{pattern}，filtered")
+                    return
 
             chat_manager.register_message(message)
 
@@ -633,6 +826,14 @@ class ChatBot:
             )  # 确保会话存在
 
             # message.update_chat_stream(chat)
+
+            if await self._process_adapter_lifecycle_command(message):
+                return
+
+            # 调试用内置指令需要先写入持久化清理边界，再停止当前运行时，
+            # 避免并发消息或进程重启重新带回清理前的短期上下文。
+            if await self._process_clear_context_command(message):
+                return
 
             # 命令处理 - 使用新插件系统检查并处理命令。
             # 命令处理器内部自行决定是否回复消息，这里只负责流程分发与拦截。

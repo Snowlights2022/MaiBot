@@ -1,33 +1,31 @@
-﻿"""send_emoji 内置工具。"""
-
-from datetime import datetime
-from io import BytesIO
-from json import dumps
-from random import sample
-from typing import Any, Dict, Optional
+"""send_emoji 内置工具。"""
 
 import asyncio
 import math
+from datetime import datetime
+from io import BytesIO
+from random import sample
+from typing import Any, Dict, Optional
 
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel
+from pydantic import Field as PydanticField
 
-from src.emoji_system.emoji_manager import _is_vlm_task_configured, emoji_manager
-from src.emoji_system.maisaka_tool import send_emoji_for_maisaka
 from src.common.data_models.image_data_model import MaiEmoji
 from src.common.data_models.message_component_data_model import ImageComponent, MessageSequence, TextComponent
 from src.common.logger import get_logger
 from src.config.config import config_manager, global_config
 from src.core.tooling import ToolExecutionContext, ToolExecutionResult, ToolInvocation, ToolSpec
-from src.llm_models.payload_content.message import MessageBuilder, RoleType
+from src.emoji_system.emoji_manager import _is_vlm_task_configured, emoji_manager
+from src.emoji_system.maisaka_tool import send_emoji_for_maisaka
+from src.llm_models.payload_content.context_item import ContextItemBuilder, RoleType
 from src.maisaka.context.messages import (
     LLMContextMessage,
     ReferenceMessage,
     ReferenceMessageType,
     SessionBackedMessage,
 )
-from src.plugin_runtime.hook_payloads import serialize_prompt_messages
 from src.prompt.prompt_manager import prompt_manager
 
 from .context import BuiltinToolRuntimeContext
@@ -37,6 +35,8 @@ logger = get_logger("maisaka_builtin_send_emoji")
 _EMOJI_SUB_AGENT_CONTEXT_LIMIT = 12
 _EMOJI_MAX_CANDIDATE_COUNT = 64
 _EMOJI_CANDIDATE_TILE_SIZE = 256
+_EMOJI_INDEX_BADGE_SIZE = 64
+_EMOJI_INDEX_FONT_SIZE = 32
 _EMOJI_SUCCESS_MESSAGE = "表情包发送成功"
 _EMOJI_VLM_NOT_CONFIGURED_MESSAGE = "错误，没有配置视觉模型，无法使用表情包功能"
 
@@ -53,7 +53,7 @@ def get_tool_spec() -> ToolSpec:
 
     return ToolSpec(
         name="send_emoji",
-        description="发送一个合适的表情包来辅助表达情绪。",
+        description="发送一个表情包来表达情绪，参与聊天。",
         parameters_schema={
             "type": "object",
             "properties": {},
@@ -133,8 +133,8 @@ def _build_labeled_tile(image_bytes: bytes, index: int, tile_size: int) -> PILIm
     tile.paste(image, (offset_x, offset_y), image)
 
     draw = ImageDraw.Draw(tile)
-    font = ImageFont.load_default()
-    badge_size = 56
+    font = ImageFont.load_default(size=_EMOJI_INDEX_FONT_SIZE)
+    badge_size = _EMOJI_INDEX_BADGE_SIZE
     badge_margin = 14
     draw.rounded_rectangle(
         (
@@ -210,7 +210,7 @@ async def _build_emoji_candidate_message(emojis: list[MaiEmoji]) -> SessionBacke
 
 def _build_send_emoji_monitor_detail(
     *,
-    request_messages: Optional[list[dict[str, Any]]] = None,
+    request_message_count: int = 0,
     reasoning_text: str = "",
     output_text: str = "",
     metrics: Optional[Dict[str, Any]] = None,
@@ -219,9 +219,8 @@ def _build_send_emoji_monitor_detail(
     """构建 send_emoji 工具统一监控详情。"""
 
     detail: Dict[str, Any] = {}
-    if isinstance(request_messages, list) and request_messages:
-        detail["request_messages"] = request_messages
-        detail["prompt_text"] = dumps(request_messages, ensure_ascii=False, indent=2)
+    if request_message_count > 0:
+        detail["request_message_count"] = request_message_count
     if reasoning_text.strip():
         detail["reasoning_text"] = reasoning_text.strip()
     if output_text.strip():
@@ -262,22 +261,30 @@ def _build_send_emoji_monitor_metadata(
             f"情绪标签：{'、'.join(send_result.emotions) if send_result.emotions else '无'}",
             f"发送结果：{send_result.message or ('成功' if send_result.success else '失败')}",
         ]
-        extra_sections.append({
-            "title": "表情发送结果",
-            "content": "\n".join(result_lines),
-        })
+        extra_sections.append(
+            {
+                "title": "表情发送结果",
+                "content": "\n".join(result_lines),
+            }
+        )
     elif error_message.strip():
-        extra_sections.append({
-            "title": "表情发送结果",
-            "content": f"发送结果：{error_message.strip()}",
-        })
+        extra_sections.append(
+            {
+                "title": "表情发送结果",
+                "content": f"发送结果：{error_message.strip()}",
+            }
+        )
 
     if extra_sections:
         detail["extra_sections"] = extra_sections
 
+    metadata: Dict[str, Any] = {}
     if detail:
-        return {"monitor_detail": detail}
-    return {}
+        metadata["monitor_detail"] = detail
+    prompt_html_uri = str(selection_metadata.get("prompt_html_uri") or "").strip()
+    if prompt_html_uri:
+        metadata["prompt_html_uri"] = prompt_html_uri
+    return metadata
 
 
 def _resolve_emoji_selector_model_task_name() -> str:
@@ -286,22 +293,17 @@ def _resolve_emoji_selector_model_task_name() -> str:
     model_config = config_manager.get_model_config()
     emoji_task_config = getattr(model_config.model_task_config, "emoji", None)
     emoji_models = [
-        model_name
-        for model_name in getattr(emoji_task_config, "model_list", [])
-        if str(model_name).strip()
+        model_name for model_name in getattr(emoji_task_config, "model_list", []) if str(model_name).strip()
     ]
     if emoji_models:
         return "emoji"
 
     planner_models = [
-        model_name
-        for model_name in model_config.model_task_config.planner.model_list
-        if str(model_name).strip()
+        model_name for model_name in model_config.model_task_config.planner.model_list if str(model_name).strip()
     ]
     models_by_name = {model.name: model for model in model_config.models}
     if planner_models and all(
-        model_name in models_by_name and models_by_name[model_name].visual
-        for model_name in planner_models
+        model_name in models_by_name and models_by_name[model_name].visual for model_name in planner_models
     ):
         return "planner"
     return "vlm"
@@ -355,28 +357,21 @@ async def _select_emoji_with_sub_agent(
         grid_columns=grid_columns,
     )
     prompt_message = ReferenceMessage(
-        content=(
-            f"[选择任务]\n"
-            f"候选总数: {len(sampled_emojis)}\n"
-            f"拼图布局: {grid_rows}x{grid_columns}\n"
-            "请只输出 JSON。"
-        ),
+        content=(f"[选择任务]\n候选总数: {len(sampled_emojis)}\n拼图布局: {grid_rows}x{grid_columns}\n请只输出 JSON。"),
         timestamp=datetime.now(),
         reference_type=ReferenceMessageType.TOOL_HINT,
         remaining_uses_value=1,
         display_prefix="[表情包选择任务]",
     )
     request_messages = [
-        MessageBuilder().set_role(RoleType.System).add_text_content(system_prompt).build(),
+        ContextItemBuilder().set_role(RoleType.System).add_text_content(system_prompt).build(),
     ]
-    prompt_llm_message = prompt_message.to_llm_message()
-    if prompt_llm_message is not None:
-        request_messages.append(prompt_llm_message)
-    candidate_to_llm_message = getattr(candidate_message, "to_llm_message", None)
-    candidate_llm_message = candidate_to_llm_message() if callable(candidate_to_llm_message) else None
-    if candidate_llm_message is not None:
-        request_messages.append(candidate_llm_message)
-    serialized_request_messages = serialize_prompt_messages(request_messages)
+    prompt_item = prompt_message.to_context_item()
+    if prompt_item is not None:
+        request_messages.append(prompt_item)
+    candidate_item = candidate_message.to_context_item()
+    if candidate_item is not None:
+        request_messages.append(candidate_item)
 
     model_task_name = _resolve_emoji_selector_model_task_name()
     if model_task_name == "vlm" and not _is_vlm_task_configured():
@@ -399,6 +394,10 @@ async def _select_emoji_with_sub_agent(
         "total_tokens": response.total_tokens,
         "overall_ms": selection_duration_ms,
     }
+    if not response.prompt_html_uri:
+        raise RuntimeError("表情包选择子代理未生成完整 Prompt 记录")
+    if selection_metadata is not None:
+        selection_metadata["prompt_html_uri"] = response.prompt_html_uri
 
     try:
         selection = EmojiSelectionResult.model_validate_json(response.content or "")
@@ -406,13 +405,15 @@ async def _select_emoji_with_sub_agent(
         logger.warning(f"{tool_ctx.runtime.log_prefix} 表情包子代理结果解析失败，将回退到候选首项: {exc}")
         if selection_metadata is not None:
             selection_metadata["monitor_detail"] = _build_send_emoji_monitor_detail(
-                request_messages=serialized_request_messages,
+                request_message_count=len(request_messages),
                 output_text=response.content or "",
                 metrics=selection_metrics,
-                extra_sections=[{
-                    "title": "解析异常",
-                    "content": str(exc),
-                }],
+                extra_sections=[
+                    {
+                        "title": "解析异常",
+                        "content": str(exc),
+                    }
+                ],
             )
         fallback_emoji = sampled_emojis[0] if sampled_emojis else None
         return fallback_emoji, ""
@@ -420,7 +421,7 @@ async def _select_emoji_with_sub_agent(
     if selection_metadata is not None:
         selection_metadata["reason"] = selection.reason.strip()
         selection_metadata["monitor_detail"] = _build_send_emoji_monitor_detail(
-            request_messages=serialized_request_messages,
+            request_message_count=len(request_messages),
             reasoning_text=selection.reason,
             output_text=response.content or "",
             metrics=selection_metrics,
@@ -428,9 +429,7 @@ async def _select_emoji_with_sub_agent(
 
     emoji_index = int(selection.emoji_index)
     if emoji_index < 1 or emoji_index > len(sampled_emojis):
-        logger.warning(
-            f"{tool_ctx.runtime.log_prefix} 表情包子代理返回了无效序号: {emoji_index!r}，将回退到第 1 张"
-        )
+        logger.warning(f"{tool_ctx.runtime.log_prefix} 表情包子代理返回了无效序号: {emoji_index!r}，将回退到第 1 张")
         emoji_index = 1
 
     return sampled_emojis[emoji_index - 1], ""
@@ -470,12 +469,14 @@ async def handle_tool(
             requested_emotion=requested_emotion,
             reasoning=tool_ctx.engine.last_reasoning_content,
             context_texts=context_texts,
-            emoji_selector=lambda _requested_emotion, reasoning, context_texts, sample_size: _select_emoji_with_sub_agent(
-                tool_ctx,
-                reasoning,
-                list(context_texts or []),
-                sample_size,
-                selection_metadata,
+            emoji_selector=lambda _requested_emotion, reasoning, context_texts, sample_size: (
+                _select_emoji_with_sub_agent(
+                    tool_ctx,
+                    reasoning,
+                    list(context_texts or []),
+                    sample_size,
+                    selection_metadata,
+                )
             ),
         )
     except Exception as exc:
@@ -523,10 +524,7 @@ async def handle_tool(
     structured_result["matched_emotion"] = send_result.matched_emotion
     structured_result["message"] = send_result.message
 
-    logger.warning(
-        f"{tool_ctx.runtime.log_prefix} 表情包发送失败 "
-        f"错误信息={send_result.message}"
-    )
+    logger.warning(f"{tool_ctx.runtime.log_prefix} 表情包发送失败 错误信息={send_result.message}")
     return tool_ctx.build_failure_result(
         invocation.tool_name,
         structured_result["message"],

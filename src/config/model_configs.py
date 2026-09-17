@@ -2,6 +2,7 @@ from enum import Enum
 from typing import Any
 
 from src.common.i18n import t
+
 from .config_base import ConfigBase, Field
 
 
@@ -39,7 +40,6 @@ class APIProvider(ConfigBase):
         default="",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "tag",
         },
     )
     """API服务商名称 (可随意命名, 在models的api-provider中需使用这个命名)"""
@@ -48,7 +48,6 @@ class APIProvider(ConfigBase):
         default="",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "link",
         },
     )
     """API服务商的BaseURL"""
@@ -58,7 +57,6 @@ class APIProvider(ConfigBase):
         repr=False,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "key",
         },
     )
     """API密钥。对于不需要鉴权的兼容端点，可将 `auth_type` 设为 `none`。"""
@@ -67,16 +65,14 @@ class APIProvider(ConfigBase):
         default="openai",
         json_schema_extra={
             "x-widget": "select",
-            "x-icon": "settings",
         },
     )
-    """客户端类型 (可选: openai/google, 默认为openai)"""
+    """客户端类型。内置支持 openai、openai_responses 和 gemini，也可由插件扩展。"""
 
     auth_type: str = Field(
         default=OpenAICompatibleAuthType.BEARER.value,
         json_schema_extra={
             "x-widget": "select",
-            "x-icon": "shield",
         },
     )
     """OpenAI 兼容接口的鉴权方式。可选值：`bearer`、`header`、`query`、`none`。"""
@@ -85,7 +81,6 @@ class APIProvider(ConfigBase):
         default="Authorization",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "header",
         },
     )
     """当 `auth_type` 为 `header` 时使用的请求头名称。"""
@@ -94,7 +89,6 @@ class APIProvider(ConfigBase):
         default="Bearer",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "shield-check",
         },
     )
     """当 `auth_type` 为 `header` 时使用的请求头前缀。留空表示直接发送原始密钥。"""
@@ -103,7 +97,6 @@ class APIProvider(ConfigBase):
         default="api_key",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "link",
         },
     )
     """当 `auth_type` 为 `query` 时使用的查询参数名称。"""
@@ -112,7 +105,6 @@ class APIProvider(ConfigBase):
         default_factory=dict,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "header",
         },
     )
     """所有请求默认附带的 HTTP Header。"""
@@ -121,7 +113,6 @@ class APIProvider(ConfigBase):
         default_factory=dict,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "list-filter",
         },
     )
     """所有请求默认附带的查询参数。"""
@@ -130,7 +121,6 @@ class APIProvider(ConfigBase):
         default=None,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "building-2",
         },
     )
     """OpenAI 官方接口可选的 `organization`。"""
@@ -139,7 +129,6 @@ class APIProvider(ConfigBase):
         default=None,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "folder-kanban",
         },
     )
     """OpenAI 官方接口可选的 `project`。"""
@@ -148,7 +137,6 @@ class APIProvider(ConfigBase):
         default="/models",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "list",
         },
     )
     """模型列表端点路径。适用于 OpenAI 兼容接口的探测与管理。"""
@@ -157,7 +145,6 @@ class APIProvider(ConfigBase):
         default=ReasoningParseMode.AUTO.value,
         json_schema_extra={
             "x-widget": "select",
-            "x-icon": "brain",
         },
     )
     """推理内容解析模式。可选值：`auto`、`native`、`think_tag`、`none`。"""
@@ -166,7 +153,6 @@ class APIProvider(ConfigBase):
         default=ToolArgumentParseMode.AUTO.value,
         json_schema_extra={
             "x-widget": "select",
-            "x-icon": "braces",
         },
     )
     """工具参数解析模式。可选值：`auto`、`strict`、`repair`、`double_decode`。"""
@@ -176,7 +162,6 @@ class APIProvider(ConfigBase):
         ge=0,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "repeat",
         },
     )
     """最大重试次数 (单个模型API调用失败, 最多重试的次数)"""
@@ -186,7 +171,6 @@ class APIProvider(ConfigBase):
         ge=1,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "clock",
             "step": 1,
         },
     )
@@ -197,7 +181,6 @@ class APIProvider(ConfigBase):
         ge=1,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "timer",
             "step": 1,
         },
     )
@@ -235,7 +218,6 @@ class ModelInfo(ConfigBase):
         default="",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "package",
         },
     )
     """模型标识符 (API服务商提供的模型标识符)"""
@@ -244,7 +226,6 @@ class ModelInfo(ConfigBase):
         default="",
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "tag",
         },
     )
     """模型名称 (可随意命名, 在models中需使用这个命名)"""
@@ -253,7 +234,6 @@ class ModelInfo(ConfigBase):
         default="",
         json_schema_extra={
             "x-widget": "select",
-            "x-icon": "link",
         },
     )
     """API服务商名称 (对应在api_providers中配置的服务商名称)"""
@@ -263,7 +243,6 @@ class ModelInfo(ConfigBase):
         ge=0,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "dollar-sign",
             "step": 0.001,
         },
     )
@@ -273,7 +252,6 @@ class ModelInfo(ConfigBase):
         default=False,
         json_schema_extra={
             "x-widget": "switch",
-            "x-icon": "database",
         },
     )
     """是否启用模型输入缓存计费。开启后命中缓存的输入 token 使用 cache_price_in 计费。"""
@@ -283,7 +261,6 @@ class ModelInfo(ConfigBase):
         ge=0,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "database-zap",
             "step": 0.001,
         },
     )
@@ -294,7 +271,6 @@ class ModelInfo(ConfigBase):
         ge=0,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "dollar-sign",
             "step": 0.001,
         },
     )
@@ -304,16 +280,23 @@ class ModelInfo(ConfigBase):
         default=None,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "thermometer",
         },
     )
     """模型级别温度（可选），会覆盖任务配置中的温度"""
+
+    send_temperature: bool = Field(
+        default=True,
+        json_schema_extra={
+            "x-widget": "switch",
+            "advanced": True,
+        },
+    )
+    """是否向模型服务发送由 MaiBot 管理的 temperature 参数。"""
 
     max_tokens: int | None = Field(
         default=None,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "layers",
         },
     )
     """模型级别最大token数（可选），会覆盖任务配置中的max_tokens"""
@@ -322,7 +305,7 @@ class ModelInfo(ConfigBase):
         default=False,
         json_schema_extra={
             "x-widget": "switch",
-            "x-icon": "zap",
+            "advanced": True,
         },
     )
     """强制流式输出模式 (若模型不支持非流式输出, 请设置为true启用强制流式输出, 默认值为false)"""
@@ -331,7 +314,6 @@ class ModelInfo(ConfigBase):
         default=False,
         json_schema_extra={
             "x-widget": "switch",
-            "x-icon": "image",
         },
     )
     """是否为多模态模型。开启后表示该模型支持视觉输入。"""
@@ -340,7 +322,6 @@ class ModelInfo(ConfigBase):
         default_factory=dict,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "sliders",
         },
     )
     """额外参数 (用于API调用时的额外配置)。
@@ -368,7 +349,6 @@ class TaskConfig(ConfigBase):
         default_factory=list,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "list",
         },
     )
     """使用的模型列表, 每个元素对应上面的模型名称(name)"""
@@ -378,7 +358,6 @@ class TaskConfig(ConfigBase):
         ge=1,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "layers",
             "step": 1,
         },
     )
@@ -390,7 +369,6 @@ class TaskConfig(ConfigBase):
         le=2,
         json_schema_extra={
             "x-widget": "slider",
-            "x-icon": "thermometer",
             "step": 0.1,
         },
     )
@@ -401,18 +379,16 @@ class TaskConfig(ConfigBase):
         ge=0,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "alert-circle",
             "step": 0.1,
             "advanced": True,
         },
     )
-    """慢请求阈值（秒），超过此值会输出警告日志"""
+    """超时警告时间（秒），超过此时间会输出警告日志"""
 
     selection_strategy: str = Field(
         default="balance",
         json_schema_extra={
             "x-widget": "select",
-            "x-icon": "shuffle",
             "options": ["balance", "random", "sequential"],
         },
     )
@@ -423,25 +399,11 @@ class TaskConfig(ConfigBase):
         ge=1.0,
         json_schema_extra={
             "x-widget": "input",
-            "x-icon": "clock",
             "step": 1.0,
             "advanced": True,
         },
     )
     """任务硬超时（秒），到点未返回则取消请求并尝试切换下一个模型；防止上游代理静默排队导致主循环饥饿"""
-
-
-def _default_timing_gate_task_config() -> TaskConfig:
-    """创建 Timing Gate 任务默认配置。"""
-
-    return TaskConfig(
-        model_list=[],
-        max_tokens=4096,
-        temperature=0.3,
-        slow_threshold=12.0,
-        selection_strategy="random",
-        hard_timeout=120.0,
-    )
 
 
 class ModelTaskConfig(ConfigBase):
@@ -451,74 +413,66 @@ class ModelTaskConfig(ConfigBase):
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "message-square",
         },
     )
-    """回复模型配置"""
+    """回复模型，影响麦麦的回复表现"""
 
     planner: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "map",
         },
     )
-    """规划模型配置"""
-
-    timing_gate: TaskConfig = Field(
-        default_factory=_default_timing_gate_task_config,
-        json_schema_extra={
-            "x-widget": "custom",
-            "x-icon": "timer",
-            "advanced": True,
-        },
-    )
-    """Timing Gate 节奏控制模型配置；留空时自动继用 planner 模型"""
+    """规划模型，决定麦麦的行动，需要有一定Agent能力的模型"""
 
     memory: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "brain",
             "advanced": True,
         },
     )
-    """记忆模型配置，用于长期记忆总结、抽取、写回等高质量记忆任务；留空时由调用方按需回退"""
+    """记忆模型配置，用于长期记忆总结、抽取、写回等高记忆任务；留空时由调用方按需回退"""
 
     mid_memory: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "archive",
             "advanced": True,
         },
     )
-    """中期聊天摘要模型配置；留空时自动继用 planner 模型"""
+    """聊天回想模型配置；留空时自动继用 planner 模型"""
 
     utils: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "wrench",
         },
     )
-    """组件使用的模型, 例如表情包模块, 取名模块, 关系模块, 麦麦的情绪变化等，是麦麦必须的模型"""
+    """执行文本概括，整理等小任务，是麦麦必须的模型。可以选择速度快的小尺寸模型"""
 
     learner: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "graduation-cap",
             "advanced": True,
         },
     )
-    """学习模型配置，用于表达方式学习和黑话学习；留空时自动继用 utils 模型"""
+    """学习模型配置，用于表达方式学习和黑话学习；留空时用 utils 模型"""
+
+    expression_use: TaskConfig = Field(
+        default_factory=TaskConfig,
+        json_schema_extra={
+            "x-widget": "custom",
+            "advanced": True,
+        },
+    )
+    """表达方式使用模型配置；留空时用 utils 模型"""
 
     emoji: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "smile",
             "advanced": True,
         },
     )
@@ -528,26 +482,32 @@ class ModelTaskConfig(ConfigBase):
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "image",
         },
     )
-    """视觉模型配置"""
+    """视觉模型，需要能够识图的模型"""
 
     voice: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "volume-2",
             "advanced": True,
         },
     )
-    """语音识别模型配置"""
+    """语音识别模型"""
 
     embedding: TaskConfig = Field(
         default_factory=TaskConfig,
         json_schema_extra={
             "x-widget": "custom",
-            "x-icon": "database",
         },
     )
-    """嵌入模型配置"""
+    """嵌入模型，需要文本嵌入类型的模型，不可使用LLM"""
+
+    image_embedding: TaskConfig = Field(
+        default_factory=TaskConfig,
+        json_schema_extra={
+            "x-widget": "custom",
+            "advanced": True,
+        },
+    )
+    """图片嵌入模型，必须实现图片输入到向量的协议"""

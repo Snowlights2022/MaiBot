@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useRouter, useRouterState } from '@tanstack/react-router'
 import { AnimatePresence, motion } from 'motion/react'
@@ -7,7 +7,7 @@ import { BackgroundLayer } from '@/components/background-layer'
 import { BackToTop } from '@/components/back-to-top'
 import { HttpWarningBanner } from '@/components/http-warning-banner'
 import { SkipNav } from '@/components/ui/skip-nav'
-import { useAnnounce } from '@/components/ui/announcer'
+import { useAnnounce } from '@/components/ui/announcer-context'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { useTheme } from '@/components/use-theme'
 import { useAuthGuard } from '@/hooks/use-auth'
@@ -22,44 +22,93 @@ import { Sidebar } from './Sidebar'
 import type { LayoutProps, WorkspaceMode } from './types'
 import { useMenuSections } from './use-menu-sections'
 
+const SIDEBAR_OPEN_STORAGE_KEY = 'maibot-layout-sidebar-open'
+const TOPBAR_COLLAPSED_STORAGE_KEY = 'maibot-layout-topbar-collapsed'
+const LAYOUT_IMMERSIVE_EVENT = 'maibot-layout-immersive-change'
+const PAGE_TRANSITION_DURATION_MS = 280
+const SIDEBAR_TRANSITION_DURATION_MS = 180
+const UpdateNoticeDialog = lazy(() =>
+  import('@/components/update-notice-dialog').then((module) => ({
+    default: module.UpdateNoticeDialog,
+  }))
+)
+
+type WorkspaceTransitionStage = 'idle' | 'page-exit' | 'sidebar-exit' | 'sidebar-enter' | 'page-enter'
+
+function loadStoredBoolean(key: string, fallback: boolean): boolean {
+  if (typeof window === 'undefined') {
+    return fallback
+  }
+
+  const stored = localStorage.getItem(key)
+  if (stored === 'true') return true
+  if (stored === 'false') return false
+  return fallback
+}
+
 export function Layout({ children }: LayoutProps) {
   const { t } = useTranslation()
   const { checking } = useAuthGuard() // 检查认证状态
   const router = useRouter()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const routeStatus = useRouterState({ select: (state) => state.status })
   const announce = useAnnounce()
-  const isLogsPath = pathname === '/logs' || pathname.startsWith('/reasoning-process')
-  const workspaceMode = pathname.startsWith('/chat') ? 'chat' : isLogsPath ? 'logs' : 'settings'
+  const isLogsPath =
+    pathname === '/logs' || pathname === '/statistics' || pathname.startsWith('/reasoning-process')
+  const workspaceMode = pathname === '/chat' ? 'chat' : isLogsPath ? 'logs' : 'settings'
   const isSettingsWorkspace = workspaceMode === 'settings'
-  const isChatWorkspace = workspaceMode === 'chat'
-  const showBackToTop = isSettingsWorkspace
+  const showBackToTop = isSettingsWorkspace && pathname !== '/planner-monitor'
 
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() => loadStoredBoolean(SIDEBAR_OPEN_STORAGE_KEY, true))
+  const [skipSidebarResizeAnimation, setSkipSidebarResizeAnimation] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
-  const [tooltipsEnabled, setTooltipsEnabled] = useState(false) // 控制 tooltip 启用状态
-  const [visibleWorkspaceMode, setVisibleWorkspaceMode] = useState<WorkspaceMode>(workspaceMode)
-  const [visibleChildren, setVisibleChildren] = useState<LayoutProps['children']>(children)
-  const [pendingWorkspace, setPendingWorkspace] = useState<{
-    children: LayoutProps['children']
-    mode: WorkspaceMode
-  } | null>(null)
+  const [topbarCollapsed, setTopbarCollapsed] = useState(() => loadStoredBoolean(TOPBAR_COLLAPSED_STORAGE_KEY, false))
+  const [workspaceTransitionStage, setWorkspaceTransitionStage] = useState<WorkspaceTransitionStage>('idle')
+  const [workspaceTransitionTarget, setWorkspaceTransitionTarget] = useState<WorkspaceMode | null>(null)
+  const workspaceTransitionTimerRef = useRef<number | null>(null)
+  const shellStateRef = useRef({ sidebarOpen, topbarCollapsed })
+  const immersiveRestoreRef = useRef<{ sidebarOpen: boolean; topbarCollapsed: boolean } | null>(null)
   const { theme, setTheme } = useTheme()
   const menuSections = useMenuSections()
 
-  // 侧边栏状态变化时，延迟启用/禁用 tooltip
   useEffect(() => {
-    if (sidebarOpen) {
-      // 侧边栏展开时，立即禁用 tooltip
-      setTooltipsEnabled(false)
-    } else {
-      // 侧边栏收起时，等待动画完成后再启用 tooltip
-      const timer = setTimeout(() => {
-        setTooltipsEnabled(true)
-      }, 350) // 稍大于 CSS transition duration (300ms)
-      return () => clearTimeout(timer)
+    shellStateRef.current = { sidebarOpen, topbarCollapsed }
+  }, [sidebarOpen, topbarCollapsed])
+
+  useEffect(() => {
+    const handleImmersiveChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ immersive?: boolean }>).detail
+      const immersive = detail?.immersive === true
+
+      if (immersive) {
+        immersiveRestoreRef.current ??= shellStateRef.current
+        setSkipSidebarResizeAnimation(false)
+        setSidebarOpen(false)
+        setTopbarCollapsed(true)
+        setMobileMenuOpen(false)
+        return
+      }
+
+      if (immersiveRestoreRef.current) {
+        setSkipSidebarResizeAnimation(false)
+        setSidebarOpen(immersiveRestoreRef.current.sidebarOpen)
+        setTopbarCollapsed(immersiveRestoreRef.current.topbarCollapsed)
+        immersiveRestoreRef.current = null
+      }
     }
+
+    window.addEventListener(LAYOUT_IMMERSIVE_EVENT, handleImmersiveChange)
+    return () => window.removeEventListener(LAYOUT_IMMERSIVE_EVENT, handleImmersiveChange)
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_OPEN_STORAGE_KEY, String(sidebarOpen))
   }, [sidebarOpen])
+
+  useEffect(() => {
+    localStorage.setItem(TOPBAR_COLLAPSED_STORAGE_KEY, String(topbarCollapsed))
+  }, [topbarCollapsed])
 
   // 搜索快捷键监听（Cmd/Ctrl + K）
   useEffect(() => {
@@ -75,14 +124,13 @@ export function Layout({ children }: LayoutProps) {
   }, [])
 
   useEffect(() => {
-    if (workspaceMode === visibleWorkspaceMode) {
-      setVisibleChildren(children)
-      setPendingWorkspace(null)
-      return
+    return () => {
+      if (workspaceTransitionTimerRef.current !== null) {
+        window.clearTimeout(workspaceTransitionTimerRef.current)
+      }
     }
+  }, [])
 
-    setPendingWorkspace({ children, mode: workspaceMode })
-  }, [children, visibleWorkspaceMode, workspaceMode])
   // 路由变更：焦点管理 + 屏幕阅读器播报 + document.title 更新
   useEffect(() => {
     // 构建 路径 -> 页面标题 的映射表（以当前语言 t() 翻译）
@@ -93,6 +141,8 @@ export function Layout({ children }: LayoutProps) {
       }
     }
     pathToLabel['/chat'] = t('workspace.chat')
+    pathToLabel['/planner-monitor'] = t('sidebar.menu.maisakaMonitor')
+    pathToLabel['/focus'] = t('sidebar.menu.focusCompanion')
     pathToLabel['/logs'] = t('workspace.logs')
     pathToLabel['/reasoning-process'] = t('sidebar.menu.reasoningProcess')
 
@@ -128,9 +178,94 @@ export function Layout({ children }: LayoutProps) {
 
   const actualTheme = getActualTheme()
   const { config: pageBg } = useBackground('page')
-  const isWorkspaceTransitioning = pendingWorkspace !== null
-  const visibleIsChatWorkspace = visibleWorkspaceMode === 'chat'
-  const visibleIsSettingsWorkspace = visibleWorkspaceMode === 'settings'
+
+  const scheduleWorkspaceTransition = useCallback((callback: () => void, duration: number) => {
+    workspaceTransitionTimerRef.current = window.setTimeout(() => {
+      workspaceTransitionTimerRef.current = null
+      callback()
+    }, duration)
+  }, [])
+
+  useEffect(() => {
+    if (
+      !workspaceTransitionTarget ||
+      workspaceMode !== workspaceTransitionTarget ||
+      routeStatus !== 'idle'
+    ) {
+      return
+    }
+
+    // pathname 与 Outlet 由路由器分别传播。等新 workspace 完成一次提交后再进入，
+    // 避免目标 wrapper 已切换、children 仍短暂保留旧首页时把旧内容重新显示出来。
+    const frameId = window.requestAnimationFrame(() => {
+      if (workspaceTransitionTarget === 'settings') {
+        setWorkspaceTransitionStage('sidebar-enter')
+        scheduleWorkspaceTransition(() => {
+          setWorkspaceTransitionStage('page-enter')
+          scheduleWorkspaceTransition(() => {
+            setWorkspaceTransitionStage('idle')
+            setWorkspaceTransitionTarget(null)
+          }, PAGE_TRANSITION_DURATION_MS)
+        }, SIDEBAR_TRANSITION_DURATION_MS)
+        return
+      }
+
+      setWorkspaceTransitionStage('page-enter')
+      scheduleWorkspaceTransition(() => {
+        setWorkspaceTransitionStage('idle')
+        setWorkspaceTransitionTarget(null)
+      }, PAGE_TRANSITION_DURATION_MS)
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [routeStatus, scheduleWorkspaceTransition, workspaceMode, workspaceTransitionTarget])
+
+  const handleWorkspaceNavigate = (to: '/' | '/chat' | '/logs') => {
+    if (workspaceTransitionStage !== 'idle') {
+      return
+    }
+
+    setMobileMenuOpen(false)
+    setSkipSidebarResizeAnimation(false)
+    setWorkspaceTransitionTarget(to === '/chat' ? 'chat' : to === '/logs' ? 'logs' : 'settings')
+
+    const enterWorkspace = () => {
+      void router.navigate({ to }).catch(() => {
+        setWorkspaceTransitionTarget(null)
+        setWorkspaceTransitionStage('idle')
+      })
+    }
+
+    setWorkspaceTransitionStage('page-exit')
+    scheduleWorkspaceTransition(() => {
+      if (workspaceMode === 'settings') {
+        setWorkspaceTransitionStage('sidebar-exit')
+        scheduleWorkspaceTransition(enterWorkspace, SIDEBAR_TRANSITION_DURATION_MS)
+        return
+      }
+
+      enterWorkspace()
+    }, PAGE_TRANSITION_DURATION_MS)
+  }
+
+  const pageHidden =
+    workspaceTransitionStage === 'page-exit' ||
+    workspaceTransitionStage === 'sidebar-exit' ||
+    workspaceTransitionStage === 'sidebar-enter'
+  const targetWorkspaceWaiting =
+    workspaceTransitionTarget === workspaceMode &&
+    workspaceTransitionStage !== 'idle' &&
+    workspaceTransitionStage !== 'page-enter'
+  const sidebarExiting = workspaceTransitionStage === 'sidebar-exit'
+  const handleSidebarFix = () => {
+    // 悬浮展开已处于完整宽度；固定时跳过占位宽度过渡，避免已经展开的侧栏出现二次动画。
+    setSkipSidebarResizeAnimation(true)
+    setSidebarOpen(true)
+  }
+  const handleSidebarModeToggle = () => {
+    setSkipSidebarResizeAnimation(false)
+    setSidebarOpen((currentSidebarOpen) => !currentSidebarOpen)
+  }
 
   // 认证检查中，显示加载状态
   if (checking) {
@@ -147,37 +282,48 @@ export function Layout({ children }: LayoutProps) {
       {isElectron() && <TitleBar />}
       <div
         data-dashboard-shell="true"
-        className={cn('relative isolate flex h-screen overflow-hidden overscroll-none', isElectron() && 'pt-8')}
+        className={cn(
+          'relative isolate flex h-[100dvh] overflow-hidden overscroll-none',
+          isElectron() && 'pt-8'
+        )}
       >
         <BackgroundLayer config={pageBg} layerId="page" />
         <div className="relative z-10 flex h-full min-h-0 w-full overflow-hidden">
-          {/* Sidebar：仅在设置工作区显示，伴随滑入/滑出动画 */}
-          <AnimatePresence initial={false}>
-            {isSettingsWorkspace && (
+          {/* Sidebar：离开设置工作区时向左收起，并同步释放布局宽度 */}
+          {isSettingsWorkspace && (
+            <motion.div
+              key="settings-sidebar"
+              data-dashboard-sidebar-layout="true"
+              layout={false}
+              className={cn(
+                'relative z-40 hidden shrink-0 transition-[width] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none lg:block',
+                sidebarExiting ? 'overflow-hidden' : 'overflow-visible',
+                skipSidebarResizeAnimation && 'transition-none'
+              )}
+              initial={false}
+              style={{
+                width: sidebarExiting
+                  ? 0
+                  : sidebarOpen
+                    ? 'var(--layout-sidebar-width)'
+                    : 'var(--layout-sidebar-collapsed-width)',
+              }}
+            >
               <motion.div
-                key="settings-sidebar"
-                className="relative z-40 hidden shrink-0 lg:block"
-                initial={{ width: 0, opacity: 0 }}
-                animate={{ width: sidebarOpen ? 208 : 64, opacity: 1 }}
-                exit={{ width: 0, opacity: 0 }}
-                transition={{
-                  type: 'spring',
-                  stiffness: 320,
-                  damping: 36,
-                  mass: 0.7,
-                  opacity: { duration: 0.2 },
-                }}
-                style={{ overflow: 'hidden' }}
+                className="h-full w-full will-change-transform"
+                initial={{ opacity: 0, x: '-100%' }}
+                animate={sidebarExiting ? { opacity: 0, x: '-100%' } : { opacity: 1, x: 0 }}
+                transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
               >
                 <Sidebar
                   sidebarOpen={sidebarOpen}
                   mobileMenuOpen={mobileMenuOpen}
-                  tooltipsEnabled={tooltipsEnabled}
                   onMobileMenuClose={() => setMobileMenuOpen(false)}
+                  onSidebarFix={handleSidebarFix}
                 />
               </motion.div>
-            )}
-          </AnimatePresence>
+            </motion.div>
+          )}
 
           {/* 移动端 Sidebar 走自己的 fixed 定位，通过 mobileMenuOpen 控制显隐 */}
           {isSettingsWorkspace && (
@@ -185,8 +331,8 @@ export function Layout({ children }: LayoutProps) {
               <Sidebar
                 sidebarOpen={sidebarOpen}
                 mobileMenuOpen={mobileMenuOpen}
-                tooltipsEnabled={tooltipsEnabled}
                 onMobileMenuClose={() => setMobileMenuOpen(false)}
+                onSidebarFix={handleSidebarFix}
               />
             </div>
           )}
@@ -206,7 +352,10 @@ export function Layout({ children }: LayoutProps) {
             )}
           </AnimatePresence>
           {/* Main content */}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <motion.div
+            layout={false}
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+          >
             {/* HTTP 安全警告横幅 */}
             <HttpWarningBanner />
 
@@ -216,10 +365,13 @@ export function Layout({ children }: LayoutProps) {
               mobileMenuOpen={mobileMenuOpen}
               searchOpen={searchOpen}
               actualTheme={actualTheme}
-              onSidebarToggle={() => setSidebarOpen(!sidebarOpen)}
+              onSidebarToggle={handleSidebarModeToggle}
               onMobileMenuToggle={() => setMobileMenuOpen(!mobileMenuOpen)}
               onSearchOpenChange={setSearchOpen}
               onThemeChange={setTheme}
+              onTopbarToggle={() => setTopbarCollapsed(!topbarCollapsed)}
+              onWorkspaceNavigate={handleWorkspaceNavigate}
+              topbarCollapsed={topbarCollapsed}
               workspaceMode={workspaceMode}
             />
 
@@ -230,54 +382,55 @@ export function Layout({ children }: LayoutProps) {
               tabIndex={-1}
               className={cn(
                 'relative isolate min-h-0 flex-1 outline-none',
-                isSettingsWorkspace ? 'overflow-y-auto overflow-x-hidden overscroll-contain' : 'overflow-hidden',
-                isChatWorkspace
+                workspaceTransitionStage !== 'idle'
+                  ? 'overflow-hidden'
+                  : isSettingsWorkspace
+                    ? 'overflow-y-auto overflow-x-hidden overscroll-contain'
+                    : 'overflow-hidden',
+                workspaceMode === 'chat'
                   ? 'bg-transparent'
                   : pageBg.type === 'none'
                     ? 'bg-background'
                     : 'bg-transparent'
               )}
             >
-              <AnimatePresence
-                mode="wait"
-                initial={false}
-                onExitComplete={() => {
-                  if (!pendingWorkspace) {
-                    return
-                  }
-
-                  setVisibleWorkspaceMode(pendingWorkspace.mode)
-                  setVisibleChildren(pendingWorkspace.children)
-                  setPendingWorkspace(null)
-                }}
-              >
-                {!isWorkspaceTransitioning && (
-                  <motion.div
-                    key={visibleWorkspaceMode}
-                    className={cn('relative z-10 min-w-0', visibleIsSettingsWorkspace ? 'h-full min-h-full' : 'h-full')}
-                    initial={{ opacity: 0, x: visibleIsChatWorkspace ? 32 : -32, filter: 'blur(6px)' }}
-                    animate={{ opacity: 1, x: 0, filter: 'blur(0px)' }}
-                    exit={{ opacity: 0, x: visibleIsChatWorkspace ? -32 : 32, filter: 'blur(6px)' }}
-                    transition={{
-                      type: 'spring',
-                      stiffness: 320,
-                      damping: 34,
-                      mass: 0.7,
-                      opacity: { duration: 0.18 },
-                      filter: { duration: 0.22 },
-                    }}
-                  >
-                    {visibleChildren}
-                  </motion.div>
+              <motion.div
+                key={workspaceMode}
+                data-dashboard-workspace-content="true"
+                className={cn(
+                  'relative z-10 h-full min-w-0 origin-bottom will-change-transform',
+                  isSettingsWorkspace && 'min-h-full',
+                  targetWorkspaceWaiting && 'invisible'
                 )}
-              </AnimatePresence>
+                variants={
+                  workspaceMode === 'chat'
+                    ? {
+                        initial: { opacity: 1 },
+                        animate: { opacity: 1 },
+                        exit: { opacity: 1 },
+                      }
+                    : {
+                        initial: { y: '100%' },
+                        animate: { y: 0 },
+                        exit: { y: '100%' },
+                      }
+                }
+                initial="initial"
+                animate={pageHidden ? 'exit' : 'animate'}
+                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+              >
+                {children}
+              </motion.div>
             </main>
 
             {/* Back to Top Button */}
             {showBackToTop && <BackToTop />}
-          </div>
+          </motion.div>
         </div>
       </div>
+      <Suspense fallback={null}>
+        <UpdateNoticeDialog />
+      </Suspense>
     </TooltipProvider>
   )
 }

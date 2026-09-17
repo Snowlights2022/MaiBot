@@ -12,6 +12,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { resolveLocalizedText } from '@/lib/config-label'
 import { fieldHooks, type FieldHookRegistry } from '@/lib/field-hooks'
+import { cn } from '@/lib/utils'
 import type { ConfigSchema, FieldSchema } from '@/types/config-schema'
 
 import { DynamicField } from './DynamicField'
@@ -60,13 +61,7 @@ function orderInlineFields(schema: ConfigSchema, fields: FieldSchema[]) {
     .map(({ field }) => field)
 }
 
-function countSectionItems(schema: ConfigSchema) {
-  return schema.fields.length + Object.keys(schema.nested ?? {}).length
-}
-
-function shouldShowSectionCollapse(sectionKey: string, schema: ConfigSchema) {
-  return sectionKey === 'a_memorix' && countSectionItems(schema) > 1
-}
+const CHAT_TALK_RULE_FIELD_NAMES = new Set(['enable_talk_value_rules', 'talk_value_rules'])
 
 export function AdvancedSettingsButton({
   active,
@@ -97,7 +92,9 @@ function PromptGeneratorEntryCard() {
         <Sparkles className="h-4 w-4" aria-hidden="true" />
       </span>
       <span className="min-w-0 space-y-1">
-        <span className="block text-sm font-semibold text-foreground group-hover:text-primary">人设生成器</span>
+        <span className="block text-sm font-semibold text-foreground group-hover:text-primary">
+          人设生成器（测试版）
+        </span>
         <span className="block text-xs leading-5 text-muted-foreground">
           根据人格设定生成或调整麦麦的人设描述。
         </span>
@@ -138,7 +135,7 @@ function DynamicConfigSection({
   const contentVisible = !collapsible || !collapsed
 
   return (
-    <Card className="min-w-0">
+    <Card className="min-w-0" data-config-field-path={basePath}>
       <CardHeader className={contentVisible ? 'border-b border-border/50 pb-3' : 'pb-3'}>
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
@@ -218,7 +215,10 @@ function NestedDynamicConfigSection({
   const contentVisible = !collapsible || !collapsed
 
   return (
-    <Card className="min-w-0 border-border/70 bg-muted/20 shadow-none">
+    <Card
+      className="min-w-0 border-border/70 bg-muted/20 shadow-none"
+      data-config-field-path={basePath}
+    >
       <CardHeader className={contentVisible ? 'border-b border-border/50 px-3 py-2.5' : 'px-3 py-2.5'}>
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
@@ -305,6 +305,23 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
 
       if (hookEntry.type === 'replace') {
         return (
+          <div data-config-field-path={fieldPath} className="min-w-0">
+            <HookComponent
+              fieldPath={fieldPath}
+              value={values[field.name]}
+              onChange={(v) => onChange(field.name, v)}
+              onParentChange={onChange}
+              schema={field}
+              nestedSchema={nestedSchema}
+              parentValues={values}
+              advancedVisible={resolvedAdvancedVisible}
+            />
+          </div>
+        )
+      }
+
+      return (
+        <div data-config-field-path={fieldPath} className="min-w-0">
           <HookComponent
             fieldPath={fieldPath}
             value={values[field.name]}
@@ -314,28 +331,15 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
             nestedSchema={nestedSchema}
             parentValues={values}
             advancedVisible={resolvedAdvancedVisible}
-          />
-        )
-      }
-
-      return (
-        <HookComponent
-          fieldPath={fieldPath}
-          value={values[field.name]}
-          onChange={(v) => onChange(field.name, v)}
-          onParentChange={onChange}
-          schema={field}
-          nestedSchema={nestedSchema}
-          parentValues={values}
-          advancedVisible={resolvedAdvancedVisible}
-        >
-          <DynamicField
-            schema={field}
-            value={values[field.name]}
-            onChange={(v) => onChange(field.name, v)}
-            fieldPath={fieldPath}
-          />
-        </HookComponent>
+          >
+            <DynamicField
+              schema={field}
+              value={values[field.name]}
+              onChange={(v) => onChange(field.name, v)}
+              fieldPath={fieldPath}
+            />
+          </HookComponent>
+        </div>
       )
     }
 
@@ -449,22 +453,47 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
     return rows
   }
 
+  const horizontalSeparatorClassName =
+    "md:border-l md:border-border/50 md:pl-3 " +
+    "md:[&:nth-child(2n+1)]:border-l-0 md:[&:nth-child(2n+1)]:pl-0 " +
+    "xl:[&:nth-child(2n+1)]:border-l xl:[&:nth-child(2n+1)]:border-border/50 xl:[&:nth-child(2n+1)]:pl-3 " +
+    "xl:[&:nth-child(3n+1)]:border-l-0 xl:[&:nth-child(3n+1)]:pl-0"
+
   const renderRows = (rows: FieldSchema[][]) => (
     <>
-      {rows.map((row) => (
-        row.length > 1 ? (
-          <div
-            key={row.map((field) => field.name).join('|')}
-            className="grid min-w-0 gap-3 py-0.5 md:grid-cols-[repeat(auto-fit,minmax(min(18rem,100%),1fr))]"
-          >
-            {row.map((field) => (
-              <div key={field.name} className="min-w-0">{renderField(field)}</div>
-            ))}
-          </div>
-        ) : (
-          <div key={row[0].name} className="min-w-0 py-0.5">{renderField(row[0])}</div>
-        )
-      ))}
+      {rows.map((row) => {
+        const rowKey = row[0]['x-row']
+        const isVisualImageCompressionRow = rowKey === 'visual-image-compression'
+
+        return row.length > 1 ? (
+            <div
+              key={row.map((field) => field.name).join('|')}
+              data-config-row={rowKey}
+              className={cn(
+                "grid min-w-0 items-stretch gap-3 py-0.5",
+                isVisualImageCompressionRow
+                  ? "grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1.1fr)] items-center"
+                  : "md:grid-cols-2 xl:grid-cols-3",
+              )}
+            >
+              {row.map((field, fieldIndex) => (
+                <div
+                  key={field.name}
+                  className={cn(
+                    "flex min-w-0 items-stretch",
+                    isVisualImageCompressionRow
+                      ? fieldIndex > 0 && "md:border-l md:border-border/50 md:pl-3"
+                      : horizontalSeparatorClassName,
+                  )}
+                >
+                  <div className="min-w-0 flex-1">{renderField(field)}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div key={row[0].name} className="min-w-0 py-0.5">{renderField(row[0])}</div>
+          )
+      })}
     </>
   )
 
@@ -479,11 +508,35 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
     </>
   )
 
+  const renderVisibleFields = () => {
+    if (basePath !== 'chat.reply_timing') {
+      return renderFieldList(visibleFields)
+    }
+
+    const talkRuleFields = visibleFields.filter((field) => CHAT_TALK_RULE_FIELD_NAMES.has(field.name))
+    if (talkRuleFields.length === 0) {
+      return renderFieldList(visibleFields)
+    }
+
+    const commonFields = visibleFields.filter((field) => !CHAT_TALK_RULE_FIELD_NAMES.has(field.name))
+    if (commonFields.length === 0) {
+      return renderFieldList(talkRuleFields)
+    }
+
+    return (
+      <div className="min-w-0 space-y-4">
+        {renderFieldList(commonFields)}
+        <Separator className="my-2 bg-border/50" />
+        {renderFieldList(talkRuleFields)}
+      </div>
+    )
+  }
+
   return (
     <div className="min-w-0 space-y-4">
       {visibleFields.length > 0 && (
         <div>
-          {renderFieldList(visibleFields)}
+          {renderVisibleFields()}
         </div>
       )}
 
@@ -588,7 +641,7 @@ export const DynamicConfigForm: React.FC<DynamicConfigFormProps> = ({
                 key={key}
                 advancedVisible={resolvedAdvancedVisible}
                 collapsedByDefault={Boolean(nestedField?.['x-collapsed-by-default'])}
-                collapsible={shouldShowSectionCollapse(key, nestedSchema)}
+                collapsible={false}
                 nestedSchema={nestedSchema}
                 values={(values[key] as Record<string, unknown>) || {}}
                 onChange={onChange}

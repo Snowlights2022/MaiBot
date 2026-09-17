@@ -14,6 +14,11 @@ from fastapi.responses import FileResponse
 from src.common.i18n import t
 from src.common.logger import get_logger
 from src.webui.dependencies import require_auth
+from src.webui.version_compatibility import (
+    get_webui_version_compatibility,
+    read_installed_webui_version,
+    read_local_webui_version,
+)
 
 logger = get_logger("webui.app")
 
@@ -22,6 +27,26 @@ _LOCAL_DASHBOARD_ENV = "MAIBOT_WEBUI_USE_LOCAL_DASHBOARD"
 _STATISTICS_REPORT_PATH_ENV = "MAIBOT_STATISTICS_REPORT_PATH"
 _DEFAULT_STATISTICS_REPORT_PATH = "maibot_statistics.html"
 _MANUAL_INSTALL_COMMAND = f"pip install {_DASHBOARD_PACKAGE_NAME}"
+
+# 同步路由端点由 Starlette 交给 anyio 线程池执行，anyio 默认上限是 40；
+# 底层 SQLite 连接池只有 5 条常驻 + 10 条溢出连接，并发过高会让线程排队等连接，
+# 因此把同步端点的并发数限制在连接池容量以内。
+MAX_CONCURRENT_SYNC_ENDPOINTS = 8
+
+
+def limit_sync_endpoint_concurrency() -> int:
+    """把同步路由端点的并发数限制在 SQLite 连接池容量以内，并返回生效值。
+
+    必须在目标事件循环内调用：anyio 的线程池上限是按事件循环保存的，在循环外设置
+    不会作用到 WebUI 自己的循环上。
+    """
+
+    import anyio.to_thread
+
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    if limiter.total_tokens > MAX_CONCURRENT_SYNC_ENDPOINTS:
+        limiter.total_tokens = MAX_CONCURRENT_SYNC_ENDPOINTS
+    return int(limiter.total_tokens)
 
 
 def _resolve_safe_static_file_path(static_path: Path, full_path: str) -> Path | None:
@@ -187,6 +212,8 @@ def _setup_static_files(app: FastAPI):
     if static_path is None:
         return
 
+    _log_webui_version_compatibility(static_path)
+
     if not static_path.exists():
         logger.warning(t("startup.webui_static_dir_missing_with_path", static_path=static_path))
         logger.warning(t("startup.webui_dashboard_package_hint", command=_MANUAL_INSTALL_COMMAND))
@@ -235,6 +262,35 @@ def _setup_static_files(app: FastAPI):
     logger.debug(t("startup.webui_static_files_configured", static_path=static_path))
 
 
+def _log_webui_version_compatibility(static_path: Path) -> None:
+    """在控制台提示当前加载的 WebUI 与主程序版本是否匹配。"""
+
+    local_static_path = (_get_project_root() / "dashboard" / "dist").resolve()
+    if static_path.resolve() == local_static_path:
+        webui_version = read_local_webui_version(_get_project_root())
+    else:
+        webui_version = read_installed_webui_version()
+
+    compatibility = get_webui_version_compatibility(webui_version, _get_project_root())
+    if compatibility.status == "webui_outdated":
+        logger.warning(
+            t(
+                "startup.webui_version_outdated",
+                current_version=compatibility.webui_version,
+                required_version=compatibility.required_webui_version,
+            )
+        )
+    elif compatibility.status == "main_program_outdated":
+        logger.warning(
+            t(
+                "startup.main_program_version_outdated_for_webui",
+                main_version=compatibility.main_program_version,
+                current_version=compatibility.webui_version,
+                required_version=compatibility.required_webui_version,
+            )
+        )
+
+
 def _resolve_static_path() -> Path | None:
     if _is_local_dashboard_enabled():
         static_path = _get_project_root() / "dashboard" / "dist"
@@ -261,6 +317,8 @@ def show_access_token():
 
         token_manager = get_token_manager()
         current_token = token_manager.get_token()
-        logger.info(t("startup.webui_access_token", token=current_token))
+        if token_manager.should_show_startup_token():
+            logger.info(t("startup.webui_access_token", token=current_token))
+            logger.info(t("startup.webui_access_token_login_hint"))
     except Exception as e:
         logger.error(t("startup.webui_access_token_failed", error=e))

@@ -27,6 +27,24 @@ from .v18_to_v19 import migrate_v18_to_v19
 from .v19_to_v20 import migrate_v19_to_v20
 from .v20_to_v21 import migrate_v20_to_v21
 from .v21_to_v22 import LEGACY_V1_CLEANUP_TABLES, migrate_v21_to_v22
+from .v22_to_v23 import migrate_v22_to_v23
+from .v23_to_v24 import migrate_v23_to_v24
+from .v24_to_v25 import migrate_v24_to_v25
+from .v25_to_v26 import migrate_v25_to_v26
+from .v26_to_v27 import migrate_v26_to_v27
+from .v27_to_v28 import migrate_v27_to_v28
+from .v28_to_v29 import migrate_v28_to_v29
+from .v29_to_v30 import migrate_v29_to_v30
+from .v30_to_v31 import migrate_v30_to_v31
+from .v31_to_v32 import migrate_v31_to_v32
+from .v32_to_v33 import migrate_v32_to_v33
+from .v33_to_v34 import migrate_v33_to_v34
+from .v34_to_v35 import migrate_v34_to_v35
+from .v35_to_v36 import migrate_v35_to_v36
+from .v36_to_v37 import migrate_v36_to_v37
+from .v37_to_v38 import migrate_v37_to_v38
+from .v38_to_v39 import migrate_v38_to_v39
+from .v39_to_v40 import migrate_v39_to_v40
 from .version_store import SQLiteUserVersionStore
 
 EMPTY_SCHEMA_VERSION = 0
@@ -52,7 +70,25 @@ V19_SCHEMA_VERSION = 19
 V20_SCHEMA_VERSION = 20
 V21_SCHEMA_VERSION = 21
 V22_SCHEMA_VERSION = 22
-LATEST_SCHEMA_VERSION = 22
+V23_SCHEMA_VERSION = 23
+V24_SCHEMA_VERSION = 24
+V25_SCHEMA_VERSION = 25
+V26_SCHEMA_VERSION = 26
+V27_SCHEMA_VERSION = 27
+V28_SCHEMA_VERSION = 28
+V29_SCHEMA_VERSION = 29
+V30_SCHEMA_VERSION = 30
+V31_SCHEMA_VERSION = 31
+V32_SCHEMA_VERSION = 32
+V33_SCHEMA_VERSION = 33
+V34_SCHEMA_VERSION = 34
+V35_SCHEMA_VERSION = 35
+V36_SCHEMA_VERSION = 36
+V37_SCHEMA_VERSION = 37
+V38_SCHEMA_VERSION = 38
+V39_SCHEMA_VERSION = 39
+V40_SCHEMA_VERSION = 40
+LATEST_SCHEMA_VERSION = 40
 
 _LEGACY_V1_EXCLUSIVE_TABLES = (
     "chat_streams",
@@ -150,7 +186,7 @@ def _detect_v18_base_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
     return True
 
 
-def _detect_v18_common_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
+def _detect_v18_common_schema(snapshot: DatabaseSchemaSnapshot, *, use_latest_high_frequency_terms: bool = False) -> bool:
     """判断数据库是否满足 v18 之后行为学习以外的共有结构条件。"""
 
     if not _detect_v13_base_schema(snapshot):
@@ -165,11 +201,40 @@ def _detect_v18_common_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
         return False
     if not snapshot.has_column("llm_usage", "prompt_cache_enabled"):
         return False
+    if use_latest_high_frequency_terms:
+        if not _detect_latest_high_frequency_terms_schema(snapshot):
+            return False
+    elif not _detect_legacy_high_frequency_terms_schema(snapshot):
+        return False
+    return True
+
+
+def _detect_legacy_high_frequency_terms_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
+    """判断高频词表是否为 v18-v28 的全局词频结构。"""
+
     if not snapshot.has_table("high_frequency_terms"):
         return False
     if not snapshot.has_column("high_frequency_terms", "term"):
         return False
     if not snapshot.has_column("high_frequency_terms", "normalized_term"):
+        return False
+    if not snapshot.has_column("high_frequency_terms", "updated_at"):
+        return False
+    return True
+
+
+def _detect_latest_high_frequency_terms_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
+    """判断高频词表是否为按聊天流分类的当前结构。"""
+
+    if not snapshot.has_table("high_frequency_terms"):
+        return False
+    if not snapshot.has_column("high_frequency_terms", "chat_id"):
+        return False
+    if not snapshot.has_column("high_frequency_terms", "term"):
+        return False
+    if snapshot.has_column("high_frequency_terms", "normalized_term"):
+        return False
+    if snapshot.has_column("high_frequency_terms", "term_type"):
         return False
     if not snapshot.has_column("high_frequency_terms", "updated_at"):
         return False
@@ -336,34 +401,529 @@ def _detect_v22_base_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
     return True
 
 
+def _detect_v23_base_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
+    """判断数据库是否满足移除场景簇冗余字段后的行为场景结构。"""
+
+    if not _detect_v18_common_schema(snapshot):
+        return False
+    if not snapshot.has_table("behavior_scene_clusters"):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "name"):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "normalized_tags"):
+        return False
+    if not snapshot.has_column("behavior_scene_clusters", "tag_distribution"):
+        return False
+    if not snapshot.has_table("behavior_experience_paths"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "scene_cluster_id"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "actor_type"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "learning_type"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "start_scene_node_id"):
+        return False
+    if not snapshot.has_table("behavior_experience_scene_links"):
+        return False
+    if not snapshot.has_table("behavior_scene_nodes"):
+        return False
+    if snapshot.has_column("behavior_scene_nodes", "normalized_name"):
+        return False
+    if not snapshot.has_table("behavior_scene_edges"):
+        return False
+    if not snapshot.has_table("behavior_action_nodes"):
+        return False
+    if not snapshot.has_table("behavior_outcome_nodes"):
+        return False
+    if not snapshot.has_table("behavior_scene_action_edges"):
+        return False
+    if not snapshot.has_table("behavior_action_outcome_edges"):
+        return False
+    if not snapshot.has_table("behavior_scene_tag_clusters"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "tag_kind"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "tag"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "cluster_key"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "normalized_tag"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "display_tag"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "cluster_name"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "tag_members"):
+        return False
+    if not snapshot.has_table("behavior_scene_node_tags"):
+        return False
+    if not snapshot.has_column("behavior_scene_node_tags", "scene_node_id"):
+        return False
+    if not snapshot.has_column("behavior_scene_node_tags", "tag_kind"):
+        return False
+    if not snapshot.has_column("behavior_scene_node_tags", "cluster_key"):
+        return False
+    return True
+
+
+def _detect_v24_base_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
+    """判断数据库是否满足收敛后的行为动作/结果实体结构。"""
+
+    if not _detect_v18_common_schema(snapshot):
+        return False
+    if not snapshot.has_table("behavior_scene_clusters"):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "name"):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "normalized_tags"):
+        return False
+    if not snapshot.has_column("behavior_scene_clusters", "tag_distribution"):
+        return False
+    if not snapshot.has_table("behavior_experience_paths"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "scene_cluster_id"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "action_id"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "outcome_id"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "action_node_id"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "outcome_node_id"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "actor_type"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "learning_type"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "start_scene_node_id"):
+        return False
+    if not snapshot.has_table("behavior_experience_scene_links"):
+        return False
+    if not snapshot.has_table("behavior_scene_nodes"):
+        return False
+    if snapshot.has_column("behavior_scene_nodes", "normalized_name"):
+        return False
+    if not snapshot.has_table("behavior_scene_edges"):
+        return False
+    if not snapshot.has_table("behavior_actions"):
+        return False
+    if not snapshot.has_column("behavior_actions", "action_hash"):
+        return False
+    if snapshot.has_column("behavior_actions", "normalized_action"):
+        return False
+    if snapshot.has_table("behavior_action_nodes"):
+        return False
+    if not snapshot.has_table("behavior_outcomes"):
+        return False
+    if not snapshot.has_column("behavior_outcomes", "outcome_hash"):
+        return False
+    if snapshot.has_column("behavior_outcomes", "normalized_outcome"):
+        return False
+    if snapshot.has_table("behavior_outcome_nodes"):
+        return False
+    if snapshot.has_table("behavior_scene_action_edges"):
+        return False
+    if snapshot.has_table("behavior_action_outcome_edges"):
+        return False
+    if not snapshot.has_table("behavior_scene_tag_clusters"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "tag_kind"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "tag"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "cluster_key"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "normalized_tag"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "display_tag"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "cluster_name"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "tag_members"):
+        return False
+    if not snapshot.has_table("behavior_scene_node_tags"):
+        return False
+    if not snapshot.has_column("behavior_scene_node_tags", "scene_node_id"):
+        return False
+    if not snapshot.has_column("behavior_scene_node_tags", "tag_kind"):
+        return False
+    if not snapshot.has_column("behavior_scene_node_tags", "cluster_key"):
+        return False
+    return True
+
+
+def _detect_v26_base_schema(snapshot: DatabaseSchemaSnapshot, *, use_latest_high_frequency_terms: bool = False) -> bool:
+    """判断数据库是否满足移除 scene node 图层后的行为学习结构。"""
+
+    if not _detect_v18_common_schema(
+        snapshot,
+        use_latest_high_frequency_terms=use_latest_high_frequency_terms,
+    ):
+        return False
+    if not snapshot.has_table("behavior_scene_clusters"):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "name"):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "normalized_tags"):
+        return False
+    if not snapshot.has_column("behavior_scene_clusters", "tag_distribution"):
+        return False
+    if not snapshot.has_table("behavior_experience_paths"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "scene_cluster_id"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "action_id"):
+        return False
+    if not snapshot.has_column("behavior_experience_paths", "outcome_id"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "action_node_id"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "outcome_node_id"):
+        return False
+    if snapshot.has_column("behavior_experience_paths", "start_scene_node_id"):
+        return False
+    if snapshot.has_table("behavior_experience_scene_links"):
+        return False
+    if snapshot.has_table("behavior_scene_node_tags"):
+        return False
+    if snapshot.has_table("behavior_scene_edges"):
+        return False
+    if snapshot.has_table("behavior_scene_nodes"):
+        return False
+    if not snapshot.has_table("behavior_actions"):
+        return False
+    if not snapshot.has_column("behavior_actions", "action_hash"):
+        return False
+    if snapshot.has_column("behavior_actions", "normalized_action"):
+        return False
+    if snapshot.has_table("behavior_action_nodes"):
+        return False
+    if not snapshot.has_table("behavior_outcomes"):
+        return False
+    if not snapshot.has_column("behavior_outcomes", "outcome_hash"):
+        return False
+    if snapshot.has_column("behavior_outcomes", "normalized_outcome"):
+        return False
+    if snapshot.has_table("behavior_outcome_nodes"):
+        return False
+    if snapshot.has_table("behavior_scene_action_edges"):
+        return False
+    if snapshot.has_table("behavior_action_outcome_edges"):
+        return False
+    if not snapshot.has_table("behavior_scene_tag_clusters"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "tag_kind"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "tag"):
+        return False
+    if not snapshot.has_column("behavior_scene_tag_clusters", "cluster_key"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "normalized_tag"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "display_tag"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "cluster_name"):
+        return False
+    if snapshot.has_column("behavior_scene_tag_clusters", "tag_members"):
+        return False
+    return True
+
+
+def _detect_v37_base_schema(snapshot: DatabaseSchemaSnapshot) -> bool:
+    """判断数据库是否具备 v37 的主体结构。"""
+
+    if not snapshot.has_table("maisaka_reply_effects"):
+        return False
+    if not _detect_v26_base_schema(snapshot, use_latest_high_frequency_terms=True):
+        return False
+    if snapshot.has_column("behavior_scene_clusters", "score"):
+        return False
+    if not snapshot.has_table("one_time_maintenance_tasks"):
+        return False
+    if snapshot.has_column("tool_records", "tool_builtin_prompt"):
+        return False
+    if snapshot.has_column("tool_records", "tool_display_prompt"):
+        return False
+    if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+        return False
+    if not snapshot.has_column("llm_usage", "session_id"):
+        return False
+    if snapshot.has_column("llm_usage", "endpoint"):
+        return False
+    if snapshot.has_column("llm_usage", "user_type"):
+        return False
+    if not snapshot.has_column("jargons", "evidence_messages"):
+        return False
+    if snapshot.has_column("jargons", "raw_content"):
+        return False
+    if not snapshot.has_table("maisaka_monitor_events"):
+        return False
+    if not snapshot.has_column("maisaka_monitor_events", "event_id"):
+        return False
+    if not snapshot.has_column("maisaka_monitor_events", "payload_json"):
+        return False
+    return True
+
+
 class LatestSchemaVersionDetector(BaseSchemaVersionDetector):
     """当前最新 schema 结构探测器。"""
 
     @property
     def name(self) -> str:
-        """返回探测器名称。
-
-        Returns:
-            str: 当前探测器名称。
-        """
-
         return "latest_schema_detector"
 
     def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
-        """检测数据库是否已经是当前最新结构。
+        """检测数据库是否已经是当前最新结构。"""
 
-        Args:
-            snapshot: 当前数据库结构快照。
+        if not _detect_v37_base_schema(snapshot):
+            return None
+        if not snapshot.has_column("maisaka_reply_effects", "request_fingerprint"):
+            return None
+        if not snapshot.has_column("maisaka_reply_effects", "record_blob"):
+            return None
+        return LATEST_SCHEMA_VERSION
 
-        Returns:
-            Optional[int]: 若识别为最新结构则返回最新版本号，否则返回 ``None``。
-        """
 
-        if not _detect_v22_base_schema(snapshot):
+class V38SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v38 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v38_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        if not _detect_v37_base_schema(snapshot):
+            return None
+        if not snapshot.has_column("maisaka_reply_effects", "request_fingerprint"):
+            return None
+        if snapshot.has_column("maisaka_reply_effects", "record_blob"):
+            return None
+        return V38_SCHEMA_VERSION
+
+
+class V37SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v37 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v37_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        if not _detect_v37_base_schema(snapshot):
+            return None
+        if snapshot.has_column("maisaka_reply_effects", "request_fingerprint"):
+            return None
+        return V37_SCHEMA_VERSION
+
+
+class V34SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v34 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v34_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v34 结构。"""
+
+        if not _detect_v26_base_schema(snapshot, use_latest_high_frequency_terms=True):
+            return None
+        if snapshot.has_column("behavior_scene_clusters", "score"):
+            return None
+        if not snapshot.has_table("one_time_maintenance_tasks"):
+            return None
+        if snapshot.has_column("tool_records", "tool_builtin_prompt"):
+            return None
+        if snapshot.has_column("tool_records", "tool_display_prompt"):
             return None
         if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
             return None
-        return LATEST_SCHEMA_VERSION
+        if not snapshot.has_column("llm_usage", "session_id"):
+            return None
+        if snapshot.has_column("llm_usage", "endpoint"):
+            return None
+        if snapshot.has_column("llm_usage", "user_type"):
+            return None
+        if not snapshot.has_column("jargons", "evidence_messages"):
+            return None
+        if snapshot.has_column("jargons", "raw_content"):
+            return None
+        if snapshot.has_table("maisaka_monitor_events"):
+            return None
+        return V34_SCHEMA_VERSION
+
+
+class V30SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v30 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v30_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v30 结构。"""
+
+        if not _detect_v26_base_schema(snapshot, use_latest_high_frequency_terms=True):
+            return None
+        if snapshot.has_column("behavior_scene_clusters", "score"):
+            return None
+        if not snapshot.has_table("one_time_maintenance_tasks"):
+            return None
+        if snapshot.has_column("tool_records", "tool_builtin_prompt"):
+            return None
+        if snapshot.has_column("tool_records", "tool_display_prompt"):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        if not snapshot.has_column("llm_usage", "session_id"):
+            return None
+        if snapshot.has_column("llm_usage", "endpoint"):
+            return None
+        if snapshot.has_column("llm_usage", "user_type"):
+            return None
+        return V30_SCHEMA_VERSION
+
+
+class V29SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v29 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v29_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v29 结构。"""
+
+        if not _detect_v26_base_schema(snapshot, use_latest_high_frequency_terms=True):
+            return None
+        if snapshot.has_column("behavior_scene_clusters", "score"):
+            return None
+        if not snapshot.has_table("one_time_maintenance_tasks"):
+            return None
+        if snapshot.has_column("tool_records", "tool_builtin_prompt"):
+            return None
+        if snapshot.has_column("tool_records", "tool_display_prompt"):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        if snapshot.has_column("llm_usage", "session_id"):
+            return None
+        return V29_SCHEMA_VERSION
+
+
+class V28SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v28 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v28_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v28 结构。"""
+
+        if not _detect_v26_base_schema(snapshot):
+            return None
+        if snapshot.has_column("behavior_scene_clusters", "score"):
+            return None
+        if not snapshot.has_table("one_time_maintenance_tasks"):
+            return None
+        if snapshot.has_column("tool_records", "tool_builtin_prompt"):
+            return None
+        if snapshot.has_column("tool_records", "tool_display_prompt"):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        return V28_SCHEMA_VERSION
+
+
+class V27SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v27 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v27_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v27 结构。"""
+
+        if not _detect_v26_base_schema(snapshot):
+            return None
+        if snapshot.has_column("behavior_scene_clusters", "score"):
+            return None
+        if snapshot.has_table("one_time_maintenance_tasks"):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        return V27_SCHEMA_VERSION
+
+
+class V24SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v24 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v24_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v24 结构。"""
+
+        if not _detect_v24_base_schema(snapshot):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        return V24_SCHEMA_VERSION
+
+
+class V26SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v26 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v26_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v26 结构。"""
+
+        if not _detect_v26_base_schema(snapshot):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        return V26_SCHEMA_VERSION
+
+
+class V25SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v25 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v25_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v25 结构。"""
+
+        if not _detect_v24_base_schema(snapshot):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        return V25_SCHEMA_VERSION
+
+
+class V23SchemaVersionDetector(BaseSchemaVersionDetector):
+    """v23 schema 结构探测器。"""
+
+    @property
+    def name(self) -> str:
+        return "v23_schema_detector"
+
+    def detect_version(self, snapshot: DatabaseSchemaSnapshot) -> Optional[int]:
+        """检测数据库是否为 v23 结构。"""
+
+        if not _detect_v23_base_schema(snapshot):
+            return None
+        if any(snapshot.has_table(table_name) for table_name in LEGACY_V1_CLEANUP_TABLES):
+            return None
+        return V23_SCHEMA_VERSION
 
 
 class V22SchemaVersionDetector(BaseSchemaVersionDetector):
@@ -1033,6 +1593,17 @@ def build_default_schema_version_detectors() -> List[BaseSchemaVersionDetector]:
 
     return [
         LatestSchemaVersionDetector(),
+        V38SchemaVersionDetector(),
+        V37SchemaVersionDetector(),
+        V34SchemaVersionDetector(),
+        V30SchemaVersionDetector(),
+        V29SchemaVersionDetector(),
+        V28SchemaVersionDetector(),
+        V27SchemaVersionDetector(),
+        V26SchemaVersionDetector(),
+        V25SchemaVersionDetector(),
+        V24SchemaVersionDetector(),
+        V23SchemaVersionDetector(),
         V22SchemaVersionDetector(),
         V21SchemaVersionDetector(),
         V20SchemaVersionDetector(),
@@ -1225,6 +1796,133 @@ def build_default_migration_registry() -> MigrationRegistry:
                 description="合并行为场景索引重建、旧行为学习数据清理和 legacy v1 遗留表清理。",
                 handler=migrate_v21_to_v22,
                 transactional=False,
+            ),
+            MigrationStep(
+                version_from=V22_SCHEMA_VERSION,
+                version_to=V23_SCHEMA_VERSION,
+                name="v22_to_v23",
+                description="移除行为场景簇冗余身份字段。",
+                handler=migrate_v22_to_v23,
+            ),
+            MigrationStep(
+                version_from=V23_SCHEMA_VERSION,
+                version_to=V24_SCHEMA_VERSION,
+                name="v23_to_v24",
+                description="将行为动作/结果收敛为文本实体，并移除冗余 action/outcome 图边。",
+                handler=migrate_v23_to_v24,
+            ),
+            MigrationStep(
+                version_from=V24_SCHEMA_VERSION,
+                version_to=V25_SCHEMA_VERSION,
+                name="v24_to_v25",
+                description="将行为场景簇规整为仅由 domain tag 定义。",
+                handler=migrate_v24_to_v25,
+            ),
+            MigrationStep(
+                version_from=V25_SCHEMA_VERSION,
+                version_to=V26_SCHEMA_VERSION,
+                name="v25_to_v26",
+                description="移除行为学习中不再显式存储的 scene node 图层。",
+                handler=migrate_v25_to_v26,
+            ),
+            MigrationStep(
+                version_from=V26_SCHEMA_VERSION,
+                version_to=V27_SCHEMA_VERSION,
+                name="v26_to_v27",
+                description="移除行为场景簇不再使用的 score 字段。",
+                handler=migrate_v26_to_v27,
+            ),
+            MigrationStep(
+                version_from=V27_SCHEMA_VERSION,
+                version_to=V28_SCHEMA_VERSION,
+                name="v27_to_v28",
+                description="新增一次性维护任务状态表，并移除工具 prompt 冗余列。",
+                handler=migrate_v27_to_v28,
+            ),
+            MigrationStep(
+                version_from=V28_SCHEMA_VERSION,
+                version_to=V29_SCHEMA_VERSION,
+                name="v28_to_v29",
+                description="将高频词词库改为按 chat_id 分类，并移除归一化词与类型列。",
+                handler=migrate_v28_to_v29,
+            ),
+            MigrationStep(
+                version_from=V29_SCHEMA_VERSION,
+                version_to=V30_SCHEMA_VERSION,
+                name="v29_to_v30",
+                description="调整 LLM 使用记录字段：移除 endpoint/user_type，新增 session_id。",
+                handler=migrate_v29_to_v30,
+            ),
+            MigrationStep(
+                version_from=V30_SCHEMA_VERSION,
+                version_to=V31_SCHEMA_VERSION,
+                name="v30_to_v31",
+                description="清理泛 tag 和低信息行为场景簇。",
+                handler=migrate_v30_to_v31,
+            ),
+            MigrationStep(
+                version_from=V31_SCHEMA_VERSION,
+                version_to=V32_SCHEMA_VERSION,
+                name="v31_to_v32",
+                description="清理表达方式中由 prompt 示例带出的前缀和示例内容。",
+                handler=migrate_v31_to_v32,
+            ),
+            MigrationStep(
+                version_from=V32_SCHEMA_VERSION,
+                version_to=V33_SCHEMA_VERSION,
+                name="v32_to_v33",
+                description="修复黑话记录中无法被 DateTime 解析的空时间字段。",
+                handler=migrate_v32_to_v33,
+            ),
+            MigrationStep(
+                version_from=V33_SCHEMA_VERSION,
+                version_to=V34_SCHEMA_VERSION,
+                name="v33_to_v34",
+                description="为黑话记录增加证据消息引用列。",
+                handler=migrate_v33_to_v34,
+            ),
+            MigrationStep(
+                version_from=V34_SCHEMA_VERSION,
+                version_to=V35_SCHEMA_VERSION,
+                name="v34_to_v35",
+                description="新增麦麦观察事件账本表。",
+                handler=migrate_v34_to_v35,
+            ),
+            MigrationStep(
+                version_from=V35_SCHEMA_VERSION,
+                version_to=V36_SCHEMA_VERSION,
+                name="v35_to_v36",
+                description="为消息表新增平台与消息 ID 复合索引。",
+                handler=migrate_v35_to_v36,
+            ),
+            MigrationStep(
+                version_from=V36_SCHEMA_VERSION,
+                version_to=V37_SCHEMA_VERSION,
+                name="v36_to_v37",
+                description="新增 MaiSaka 回复效果汇总表。",
+                handler=migrate_v36_to_v37,
+            ),
+            MigrationStep(
+                version_from=V37_SCHEMA_VERSION,
+                version_to=V38_SCHEMA_VERSION,
+                name="v37_to_v38",
+                description="拆分回复请求指纹与稳定 Prompt 版本指纹。",
+                handler=migrate_v37_to_v38,
+            ),
+            MigrationStep(
+                version_from=V38_SCHEMA_VERSION,
+                version_to=V39_SCHEMA_VERSION,
+                name="v38_to_v39",
+                description="无损压缩回复效果完整记录与诊断镜像。",
+                handler=migrate_v38_to_v39,
+                transactional=False,
+            ),
+            MigrationStep(
+                version_from=V39_SCHEMA_VERSION,
+                version_to=V40_SCHEMA_VERSION,
+                name="v39_to_v40",
+                description="新增适配器上报的 Bot 平台账号表。",
+                handler=migrate_v39_to_v40,
             ),
         ]
     )

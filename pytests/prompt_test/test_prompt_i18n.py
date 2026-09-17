@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from src.common.i18n import set_locale
-from src.common.prompt_i18n import clear_prompt_cache, load_prompt, list_prompt_templates
+from src.common.prompt_i18n import (
+    PROMPTS_ROOT,
+    clear_prompt_cache,
+    extract_prompt_placeholders,
+    iter_prompt_files,
+    list_prompt_templates,
+    load_prompt,
+)
 from src.prompt.prompt_manager import PromptManager
 
 
@@ -181,6 +188,31 @@ def test_list_prompt_templates_loads_prompt_specific_metadata(tmp_path: Path) ->
     assert metadata.display_name == "Replyer"
     assert metadata.advanced is False
     assert metadata.description == "Prompt specific metadata"
+
+
+def test_builtin_prompt_templates_have_intro_metadata() -> None:
+    for locale_dir in sorted(path for path in PROMPTS_ROOT.iterdir() if path.is_dir()):
+        prompt_templates = list_prompt_templates(locale=locale_dir.name)
+        for prompt_file in iter_prompt_files(locale_dir, recursive=False):
+            metadata = prompt_templates[prompt_file.stem].metadata
+            assert metadata.display_name, f"{prompt_file} 缺少 display_name 元信息"
+            assert metadata.description, f"{prompt_file} 缺少 description 元信息"
+
+
+def test_builtin_emoji_content_analysis_templates_are_localized_consistently() -> None:
+    expected_placeholders = {"image_type"}
+
+    for locale in ("zh-CN", "en-US", "ja-JP"):
+        prompt_path = PROMPTS_ROOT / locale / "emoji_content_analysis.prompt"
+
+        assert prompt_path.is_file()
+        assert extract_prompt_placeholders(prompt_path.read_text(encoding="utf-8")) == expected_placeholders
+
+        template_info = list_prompt_templates(locale=locale)["emoji_content_analysis"]
+        assert template_info.path == prompt_path
+        assert template_info.metadata.display_name
+        assert template_info.metadata.advanced is True
+        assert template_info.metadata.description
 
 
 def test_list_prompt_templates_reports_duplicate_name_with_custom_root(tmp_path: Path) -> None:

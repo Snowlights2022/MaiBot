@@ -4,12 +4,13 @@ import { useTranslation } from 'react-i18next'
 import { useNavigate } from '@tanstack/react-router'
 
 import { cn } from '@/lib/utils'
-import { fetchWithAuth } from '@/lib/fetch-with-auth'
+import { ApiError, backendApi } from '@/lib/http'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/hooks/use-toast'
-import { clearLocalCache, DEFAULT_SETTINGS, exportSettings, formatBytes, getSetting, getStorageUsage, importSettings, resetAllSettings, setSetting } from '@/lib/settings-manager'
+import { clearLocalCache, DEFAULT_SETTINGS, exportSettings, formatBytes, getSetting, getStorageUsage, importSettings, resetAllGuidesAndNotices, resetAllSettings, setSetting } from '@/lib/settings-manager'
 import { logWebSocket } from '@/lib/log-websocket'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog'
 
@@ -26,6 +27,9 @@ export function OtherTab() {
   const [wsReconnectInterval, setWsReconnectInterval] = useState(() => getSetting('wsReconnectInterval'))
   const [wsMaxReconnectAttempts, setWsMaxReconnectAttempts] = useState(() => getSetting('wsMaxReconnectAttempts'))
   const [dataSyncInterval, setDataSyncInterval] = useState(() => getSetting('dataSyncInterval'))
+  const [enableAvatarFetch, setEnableAvatarFetch] = useState(() => getSetting('enableAvatarFetch'))
+  const [enableFocusCompanion, setEnableFocusCompanion] = useState(() => getSetting('enableFocusCompanion'))
+  const [alwaysShowUpdateNotice, setAlwaysShowUpdateNotice] = useState(() => getSetting('alwaysShowUpdateNotice'))
   const [storageUsage, setStorageUsage] = useState(() => getStorageUsage())
   
   // 导入/导出状态
@@ -69,6 +73,21 @@ export function OtherTab() {
     const interval = value[0]
     setDataSyncInterval(interval)
     setSetting('dataSyncInterval', interval)
+  }
+
+  const handleAvatarFetchChange = (checked: boolean) => {
+    setEnableAvatarFetch(checked)
+    setSetting('enableAvatarFetch', checked)
+  }
+
+  const handleFocusCompanionChange = (checked: boolean) => {
+    setEnableFocusCompanion(checked)
+    setSetting('enableFocusCompanion', checked)
+  }
+
+  const handleAlwaysShowUpdateNoticeChange = (checked: boolean) => {
+    setAlwaysShowUpdateNotice(checked)
+    setSetting('alwaysShowUpdateNotice', checked)
   }
 
   // 清除日志缓存
@@ -140,6 +159,9 @@ export function OtherTab() {
           setWsReconnectInterval(getSetting('wsReconnectInterval'))
           setWsMaxReconnectAttempts(getSetting('wsMaxReconnectAttempts'))
           setDataSyncInterval(getSetting('dataSyncInterval'))
+          setEnableAvatarFetch(getSetting('enableAvatarFetch'))
+          setEnableFocusCompanion(getSetting('enableFocusCompanion'))
+          setAlwaysShowUpdateNotice(getSetting('alwaysShowUpdateNotice'))
           refreshStorageUsage()
           
           toast({
@@ -187,10 +209,22 @@ export function OtherTab() {
     setWsReconnectInterval(DEFAULT_SETTINGS.wsReconnectInterval)
     setWsMaxReconnectAttempts(DEFAULT_SETTINGS.wsMaxReconnectAttempts)
     setDataSyncInterval(DEFAULT_SETTINGS.dataSyncInterval)
+    setEnableAvatarFetch(DEFAULT_SETTINGS.enableAvatarFetch)
+    setEnableFocusCompanion(DEFAULT_SETTINGS.enableFocusCompanion)
+    setAlwaysShowUpdateNotice(DEFAULT_SETTINGS.alwaysShowUpdateNotice)
     refreshStorageUsage()
     toast({
       title: t('settings.other.resetDone'),
       description: t('settings.other.resetDoneDesc'),
+    })
+  }
+
+  const handleResetGuidesAndNotices = () => {
+    const clearedCount = resetAllGuidesAndNotices()
+    refreshStorageUsage()
+    toast({
+      title: t('settings.other.guidesResetDone'),
+      description: t('settings.other.guidesResetDoneDesc', { count: clearedCount }),
     })
   }
 
@@ -199,13 +233,12 @@ export function OtherTab() {
 
     try {
       // 调用后端API重置首次配置状态
-      const response = await fetchWithAuth('/api/webui/setup/reset', {
-        method: 'POST',
-      })
+      const data = await backendApi.post<{ success: boolean; message?: string }>(
+        '/api/webui/setup/reset',
+        { errorMessage: t('settings.other.clearStorageFailed') }
+      )
 
-      const data = await response.json()
-
-      if (response.ok && data.success) {
+      if (data.success) {
         toast({
           title: t('settings.other.resetSuccess'),
           description: t('settings.other.clearStorageSuccess'),
@@ -226,7 +259,11 @@ export function OtherTab() {
       console.error('重置配置状态错误:', error)
       toast({
         title: t('settings.other.resetFailed'),
-        description: t('settings.other.clearStorageFailed'),
+        // HTTP 层失败展示后端给出的错误信息；网络层失败保持原有固定文案
+        description:
+          error instanceof ApiError && error.status !== undefined
+            ? error.message
+            : t('settings.other.clearStorageFailed'),
         variant: 'destructive',
       })
     } finally {
@@ -236,6 +273,62 @@ export function OtherTab() {
 
   return (
     <div className="space-y-4 sm:space-y-6">
+      {/* 展示设置 */}
+      <div className="rounded-lg border bg-card p-4 sm:p-6">
+        <h3 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">
+          {t('settings.other.display')}
+        </h3>
+        <div className="flex items-start justify-between gap-4 rounded-lg bg-muted/50 p-3 sm:p-4">
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor="enable-avatar-fetch" className="text-sm font-medium">
+              {t('settings.other.enableAvatarFetch')}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t('settings.other.enableAvatarFetchDesc')}
+            </p>
+          </div>
+          <Switch
+            id="enable-avatar-fetch"
+            checked={enableAvatarFetch}
+            onCheckedChange={handleAvatarFetchChange}
+            aria-label={t('settings.other.enableAvatarFetch')}
+          />
+        </div>
+        <div className="mt-3 flex items-start justify-between gap-4 rounded-lg bg-muted/50 p-3 sm:p-4">
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor="enable-focus-companion" className="text-sm font-medium">
+              专注陪伴入口
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              开启后在顶栏显示沉浸式番茄钟陪伴入口；默认隐藏。
+            </p>
+          </div>
+          <Switch
+            id="enable-focus-companion"
+            checked={enableFocusCompanion}
+            onCheckedChange={handleFocusCompanionChange}
+            aria-label="专注陪伴入口"
+          />
+        </div>
+      </div>
+
+      {/* 引导与提示 */}
+      <div className="rounded-lg border bg-card p-4 sm:p-6">
+        <h3 className="mb-3 flex items-center gap-2 text-base font-semibold sm:mb-4 sm:text-lg">
+          <RotateCcw className="h-5 w-5" />
+          {t('settings.other.guidesAndNotices')}
+        </h3>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-muted-foreground sm:text-sm">
+            {t('settings.other.guidesAndNoticesDesc')}
+          </p>
+          <Button variant="outline" onClick={handleResetGuidesAndNotices} className="shrink-0 gap-2">
+            <RotateCcw className="h-4 w-4" />
+            {t('settings.other.resetGuidesAndNotices')}
+          </Button>
+        </div>
+      </div>
+
       {/* 性能与存储 */}
       <div className="rounded-lg border bg-card p-4 sm:p-6">
         <h3 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4 flex items-center gap-2">
@@ -479,6 +572,22 @@ export function OtherTab() {
             <p className="text-xs sm:text-sm text-muted-foreground">
               {t('settings.other.devToolsDesc')}
             </p>
+          </div>
+          <div className="flex items-start justify-between gap-4 rounded-lg bg-muted/50 p-3 sm:p-4">
+            <div className="min-w-0 space-y-1">
+              <Label htmlFor="always-show-update-notice" className="text-sm font-medium">
+                {t('settings.other.alwaysShowUpdateNotice')}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.other.alwaysShowUpdateNoticeDesc')}
+              </p>
+            </div>
+            <Switch
+              id="always-show-update-notice"
+              checked={alwaysShowUpdateNotice}
+              onCheckedChange={handleAlwaysShowUpdateNoticeChange}
+              aria-label={t('settings.other.alwaysShowUpdateNotice')}
+            />
           </div>
           <AlertDialog>
             <AlertDialogTrigger asChild>

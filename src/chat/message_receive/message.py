@@ -1,6 +1,6 @@
 import asyncio
 from asyncio import Task
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from rich.traceback import install
 from sqlmodel import select
@@ -13,6 +13,7 @@ from src.common.data_models.message_component_data_model import (
     AtComponent,
     DictComponent,
     EmojiComponent,
+    FileComponent,
     ForwardNodeComponent,
     ImageComponent,
     ReplyComponent,
@@ -36,7 +37,10 @@ class MsgIDMapping:
 
 
 class SessionMessage(MaiMessage):
-    
+    # 仅记录适配器成功回执明确提供的平台最终 ID；没有回执时保持 None，
+    # 不得使用发送前生成的内部 message_id 代替。
+    platform_message_id: Optional[str] = None
+
     #便于调试的打印函数
     def __str__(self) -> str:
         """返回适合日志输出的消息摘要。"""
@@ -114,6 +118,8 @@ class SessionMessage(MaiMessage):
             return f"At(target={target_name!r})"
         if isinstance(component, VoiceComponent):
             return f"Voice(content={self._truncate_text(component.content or None, 60)})"
+        if isinstance(component, FileComponent):
+            return f"File(name={component.name!r}, size={component.size!r})"
         if isinstance(component, ReplyComponent):
             sender_name = (
                 component.target_message_sender_cardname
@@ -217,6 +223,8 @@ class SessionMessage(MaiMessage):
                 component,
                 enable_voice_transcription=enable_voice_transcription,
             )
+        elif isinstance(component, FileComponent):
+            return component.to_plain_text()
         elif isinstance(component, ReplyComponent):
             return await self.process_reply_component(component, id_content_map)
         elif isinstance(component, ForwardNodeComponent):
@@ -336,6 +344,7 @@ class SessionMessage(MaiMessage):
         try:
             tuple_content = await emoji_manager.get_emoji_description(
                 emoji_bytes=component.binary_data,
+                session_id=self.session_id,
                 wait_for_build=enable_heavy_media_analysis,
             )
         except Exception:

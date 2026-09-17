@@ -4,19 +4,28 @@
 提供从各个 AI 厂商 API 获取可用模型列表的代理接口
 """
 
+from typing import Any, Dict, List, Optional, Set
+
 import os
-from typing import Dict, List, Optional
+import time
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 import httpx
 import tomlkit
-from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.common.logger import get_logger
 from src.config.config import CONFIG_DIR
-from src.config.model_configs import APIProvider
+from src.config.model_configs import APIProvider, TaskConfig
+from src.llm_models.exceptions import RespNotOkException
 from src.llm_models.model_client import ensure_client_type_loaded
 from src.llm_models.model_client.base_client import client_registry
 from src.llm_models.openai_compat import build_openai_compatible_client_config, normalize_openai_base_url
+from src.llm_models.payload_content.context_item import ContextItem, ContextItemBuilder
+from src.llm_models.payload_content.tool_option import ToolCall
+from src.llm_models.request_snapshot import format_request_snapshot_log_info
+from src.llm_models.utils_model import LLMOrchestrator, LLMResponseResult
 from src.webui.dependencies import require_auth
 from src.webui.utils.network_security import validate_public_url
 
@@ -30,6 +39,11 @@ MODEL_FETCHER_CONFIG = {
         "endpoint": "/models",
         "parser": "openai",
     },
+    # OpenAI Responses API 与 Chat Completions 共用模型列表格式
+    "openai_responses": {
+        "endpoint": "/models",
+        "parser": "openai",
+    },
     # Gemini 格式
     "gemini": {
         "endpoint": "/models",
@@ -37,9 +51,66 @@ MODEL_FETCHER_CONFIG = {
     },
 }
 
+MODEL_TEST_IMAGE_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARn"
+    "QU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABBSURBVFhH7c6hDQAgDEXB"
+    "DstKjMkM4GsQBIq4Js9U/Fy0PmZlkR+vAwAA2AJOL+/lAAAAAAAAAP4H3A4AAKAcsAB+"
+    "y6u1cyDAxAAAAABJRU5ErkJggg=="
+)
+MODEL_TEST_TOOL_NAME = "maibot_model_test_report"
+
+
+class ModelTestRequest(BaseModel):
+    """单个模型测试请求。"""
+
+    model_name: str = Field(..., min_length=1, description="model_config.toml 中定义的模型名称")
+
+
+class ModelTestToolCall(BaseModel):
+    """模型测试返回的工具调用摘要。"""
+
+    id: str
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelTestResponse(BaseModel):
+    """单个模型测试响应。"""
+
+    success: bool
+    model_name: str
+    visual_tested: bool
+    tool_call_ok: bool
+    response: str = ""
+    reasoning: str = ""
+    tool_calls: List[ModelTestToolCall] = Field(default_factory=list)
+    latency_ms: float | None = None
+    error: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+class _SingleModelTestOrchestrator(LLMOrchestrator):
+    """复用 LLM 调度器，但将 WebUI 测试请求限制到单个模型。"""
+
+    def __init__(self, model_name: str) -> None:
+        self._model_test_task_config = TaskConfig(
+            model_list=[model_name],
+            max_tokens=512,
+            temperature=0.0,
+            slow_threshold=30.0,
+            selection_strategy="sequential",
+            hard_timeout=90.0,
+        )
+        super().__init__(task_name="webui_model_test", request_type="webui_model_test")
+
+    def _get_task_config_or_raise(self) -> TaskConfig:
+        return self._model_test_task_config
+
 
 @router.get("/client-types")
-async def get_registered_client_types():
+def get_registered_client_types():
     """返回当前主程序与插件已注册的 LLM Provider client_type。"""
     for client_type in MODEL_FETCHER_CONFIG:
         ensure_client_type_loaded(client_type)
@@ -62,6 +133,49 @@ async def get_registered_client_types():
         "client_types": client_types,
         "count": len(client_types),
     }
+
+
+@router.post("/test-model", response_model=ModelTestResponse)
+async def test_model_capability(request: ModelTestRequest):
+    """测试单个模型的文本、tool call 与可选视觉能力。"""
+    model_name = request.model_name.strip()
+    model_config = _get_model_config(model_name)
+    if model_config is None:
+        raise HTTPException(status_code=404, detail=f"未找到模型: {model_name}")
+
+    # 嵌入模型不支持 chat/completions 接口，需改用嵌入接口测试
+    if model_name in _get_embedding_task_model_names():
+        return await _test_embedding_model(model_name)
+
+    visual_enabled = bool(model_config.get("visual", False))
+    start_time = time.time()
+    try:
+        orchestrator = _SingleModelTestOrchestrator(model_name=model_name)
+        result = await orchestrator.generate_response_with_context_async(
+            context_factory=_build_model_test_context_factory(visual_enabled),
+            temperature=0.0,
+            max_tokens=512,
+            model_name=model_name,
+            tools=_build_model_test_tools(),
+        )
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        return _build_model_test_response(
+            model_name=model_name,
+            visual_tested=visual_enabled,
+            latency_ms=latency_ms,
+            result=result,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"模型测试失败: model={model_name}, error={e}", exc_info=True)
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        return _build_model_test_response(
+            model_name=model_name,
+            visual_tested=visual_enabled,
+            latency_ms=latency_ms,
+            error=_format_model_test_error(e),
+        )
 
 
 def _normalize_url(url: str) -> str:
@@ -125,6 +239,7 @@ async def _fetch_models_from_provider(
     auth_query_name: str = "api_key",
     default_headers: Optional[Dict[str, str]] = None,
     default_query: Optional[Dict[str, str]] = None,
+    allow_configured_private_network: bool = False,
 ) -> List[Dict]:
     """从提供商 API 获取模型列表。
 
@@ -140,12 +255,16 @@ async def _fetch_models_from_provider(
         auth_query_name: Query 鉴权时使用的查询参数名称。
         default_headers: 默认附带的请求头。
         default_query: 默认附带的查询参数。
+        allow_configured_private_network: 是否允许已保存厂商配置指向回环或私网地址。
 
     Returns:
         List[Dict]: 解析后的模型列表。
     """
     try:
-        base_url = validate_public_url(_normalize_url(base_url))
+        base_url = validate_public_url(
+            _normalize_url(base_url),
+            allow_configured_private_network=allow_configured_private_network,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -239,6 +358,221 @@ def _get_provider_config(provider_name: str) -> Optional[Dict]:
         return None
 
 
+def _get_model_config(model_name: str) -> Optional[Dict]:
+    """
+    从 model_config.toml 获取指定模型的配置。
+
+    Args:
+        model_name: 模型名称。
+
+    Returns:
+        模型配置，如果未找到则返回 None。
+    """
+    config_path = os.path.join(CONFIG_DIR, "model_config.toml")
+    if not os.path.exists(config_path):
+        return None
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_data = tomlkit.load(f)
+
+        models = config_data.get("models", [])
+        model = next((model for model in models if model.get("name") == model_name), None)
+        return dict(model) if model is not None else None
+    except Exception as e:
+        logger.error(f"读取模型配置失败: {e}")
+        return None
+
+
+def _get_embedding_task_model_names() -> Set[str]:
+    """从 model_config.toml 获取嵌入任务配置的模型名称集合。
+
+    Returns:
+        嵌入任务 model_list 中的模型名称集合，读取失败时返回空集合。
+    """
+    config_path = os.path.join(CONFIG_DIR, "model_config.toml")
+    if not os.path.exists(config_path):
+        return set()
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_data = tomlkit.load(f)
+
+        task_config = config_data.get("model_task_config", {}).get("embedding", {})
+        return {str(name) for name in task_config.get("model_list", [])}
+    except Exception as e:
+        logger.error(f"读取嵌入任务配置失败: {e}")
+        return set()
+
+
+async def _test_embedding_model(model_name: str) -> ModelTestResponse:
+    """对嵌入任务中的模型执行嵌入测试。
+
+    嵌入模型不支持 chat/completions 接口，直接发对话测试会被服务商拒绝，
+    因此改为调用嵌入接口验证可用性。
+    """
+    start_time = time.time()
+    try:
+        orchestrator = _SingleModelTestOrchestrator(model_name=model_name)
+        result = await orchestrator.get_embedding("MaiBot 模型可用性测试")
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        return ModelTestResponse(
+            success=True,
+            model_name=result.model_name or model_name,
+            visual_tested=False,
+            tool_call_ok=False,
+            response=f"嵌入向量维度: {len(result.embedding)}",
+            latency_ms=latency_ms,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"嵌入模型测试失败: model={model_name}, error={e}", exc_info=True)
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        return ModelTestResponse(
+            success=False,
+            model_name=model_name,
+            visual_tested=False,
+            tool_call_ok=False,
+            latency_ms=latency_ms,
+            error=_format_model_test_error(e),
+        )
+
+
+def _format_model_test_error(error: Exception) -> str:
+    """格式化模型测试的完整诊断信息。
+
+    常规 LLM 调用为了面向用户展示，会将 HTTP 错误映射为“参数不正确”等摘要。
+    模型测试用于排查配置，因此需要同时保留 HTTP 状态、上游响应、
+    底层异常与已脱敏的请求快照信息。
+    """
+    lines = [f"错误类型: {type(error).__name__}", f"错误摘要: {error}"]
+
+    if isinstance(error, RespNotOkException):
+        lines.insert(1, f"HTTP 状态码: {error.status_code}")
+        upstream_detail = str(error.message or "").strip()
+        if upstream_detail and upstream_detail != str(error):
+            lines.append(f"上游返回:\n{upstream_detail}")
+
+    cause = error.__cause__
+    if cause is not None:
+        lines.append(f"底层异常: {type(cause).__name__}: {cause}")
+
+    snapshot_info = format_request_snapshot_log_info(error).strip()
+    if snapshot_info:
+        lines.append(snapshot_info)
+
+    return "\n".join(lines)
+
+
+def _build_model_test_prompt(visual_enabled: bool) -> str:
+    """构造单模型测试提示词。"""
+    image_instruction = (
+        "本次消息还附带了一张测试图片，请在工具参数 saw_image 中填 true，并简要描述图片。"
+        if visual_enabled
+        else "本次消息没有附带图片，请在工具参数 saw_image 中填 false。"
+    )
+    return (
+        "你正在执行 MaiBot WebUI 的单模型能力测试。\n"
+        "测试目标：确认模型可以读取普通文本，并可以按工具定义发起 tool call。\n"
+        f"{image_instruction}\n"
+        f"请必须调用工具 {MODEL_TEST_TOOL_NAME}，不要只用普通文本回答。\n"
+        "工具参数要求：status 填 ok，echo 填 maibot model test。"
+    )
+
+
+def _build_model_test_tools() -> List[Dict[str, Any]]:
+    """构造模型测试使用的工具定义。"""
+    return [
+        {
+            "name": MODEL_TEST_TOOL_NAME,
+            "description": "回报 MaiBot WebUI 模型测试结果。",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "description": "测试状态，成功时填 ok。",
+                        "enum": ["ok"],
+                    },
+                    "echo": {
+                        "type": "string",
+                        "description": "文本回显，固定填 maibot model test。",
+                    },
+                    "saw_image": {
+                        "type": "boolean",
+                        "description": "本次请求中是否包含并识别了测试图片。",
+                    },
+                    "image_summary": {
+                        "type": "string",
+                        "description": "如果包含图片，简短描述图片内容；未包含图片时留空。",
+                    },
+                },
+                "required": ["status", "echo", "saw_image"],
+            },
+        }
+    ]
+
+
+def _build_model_test_context_factory(visual_enabled: bool):
+    """构造可按客户端图片格式能力生成消息的工厂。"""
+
+    def context_factory(client) -> List[ContextItem]:
+        builder = ContextItemBuilder().add_text_content(_build_model_test_prompt(visual_enabled))
+        if visual_enabled:
+            builder.add_image_content(
+                image_format="png",
+                image_base64=MODEL_TEST_IMAGE_BASE64,
+                support_formats=client.get_support_image_formats(),
+            )
+        return [builder.build()]
+
+    return context_factory
+
+
+def _serialize_model_test_tool_calls(tool_calls: List[ToolCall] | None) -> List[ModelTestToolCall]:
+    """将内部工具调用对象转换为 WebUI 响应结构。"""
+    return [
+        ModelTestToolCall(
+            id=tool_call.call_id,
+            name=tool_call.func_name,
+            arguments=tool_call.args or {},
+        )
+        for tool_call in (tool_calls or [])
+    ]
+
+
+def _build_model_test_response(
+    *,
+    model_name: str,
+    visual_tested: bool,
+    latency_ms: float | None,
+    result: LLMResponseResult | None = None,
+    error: str | None = None,
+) -> ModelTestResponse:
+    """根据 LLM 调用结果构造模型测试响应。"""
+    tool_calls = _serialize_model_test_tool_calls(result.tool_calls if result is not None else None)
+    tool_call_ok = any(tool_call.name == MODEL_TEST_TOOL_NAME for tool_call in tool_calls)
+    success = result is not None and tool_call_ok and not error
+    if result is not None and not tool_call_ok and not error:
+        error = f"模型未按要求调用测试工具 {MODEL_TEST_TOOL_NAME}"
+
+    return ModelTestResponse(
+        success=success,
+        model_name=result.model_name if result is not None and result.model_name else model_name,
+        visual_tested=visual_tested,
+        tool_call_ok=tool_call_ok,
+        response=result.response if result is not None else "",
+        reasoning=result.reasoning if result is not None else "",
+        tool_calls=tool_calls,
+        latency_ms=latency_ms,
+        error=error,
+        prompt_tokens=result.prompt_tokens if result is not None else 0,
+        completion_tokens=result.completion_tokens if result is not None else 0,
+        total_tokens=result.total_tokens if result is not None else 0,
+    )
+
+
 @router.get("/list")
 async def get_provider_models(
     provider_name: str = Query(..., description="提供商名称"),
@@ -278,6 +612,7 @@ async def get_provider_models(
         auth_query_name=provider_config.get("auth_query_name", "api_key"),
         default_headers=provider_config.get("default_headers", {}),
         default_query=provider_config.get("default_query", {}),
+        allow_configured_private_network=True,
     )
 
     return {
@@ -294,7 +629,7 @@ async def get_models_by_url(
     api_key: str = Query(..., description="API Key"),
     parser: str = Query("openai", description="响应解析器类型 (openai | gemini)"),
     endpoint: str = Query("/models", description="获取模型列表的端点"),
-    client_type: str = Query("openai", description="客户端类型 (openai | gemini)"),
+    client_type: str = Query("openai", description="客户端类型 (openai | openai_responses | gemini)"),
     auth_type: str = Query("bearer", description="鉴权方式 (bearer | header | query | none)"),
     auth_header_name: str = Query("Authorization", description="Header 鉴权名称"),
     auth_header_prefix: str = Query("Bearer", description="Header 鉴权前缀"),
@@ -320,11 +655,11 @@ async def get_models_by_url(
     }
 
 
-@router.get("/test-connection")
-async def test_provider_connection(
-    base_url: str = Query(..., description="提供商的基础 URL"),
-    api_key: Optional[str] = Query(None, description="API Key（可选，用于验证 Key 有效性）"),
-    client_type: str = Query("openai", description="客户端类型 (openai | gemini)"),
+async def _test_provider_connection(
+    base_url: str,
+    api_key: Optional[str],
+    client_type: str,
+    allow_configured_private_network: bool = False,
 ):
     """
     测试提供商连接状态
@@ -346,7 +681,10 @@ async def test_provider_connection(
         raise HTTPException(status_code=400, detail="base_url 不能为空")
 
     try:
-        base_url = validate_public_url(base_url)
+        base_url = validate_public_url(
+            base_url,
+            allow_configured_private_network=allow_configured_private_network,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -361,7 +699,7 @@ async def test_provider_connection(
     # 第一步：测试网络连通性
     try:
         start_time = time.time()
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             # 尝试 GET 请求 base_url（不需要 API Key）
             response = await client.get(base_url)
             latency = (time.time() - start_time) * 1000
@@ -387,7 +725,7 @@ async def test_provider_connection(
     if api_key:
         try:
             start_time = time.time()
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
                 headers = {"Content-Type": "application/json"}
                 params = {}
 
@@ -417,6 +755,20 @@ async def test_provider_connection(
             result["api_key_valid"] = None
 
     return result
+
+
+@router.get("/test-connection")
+async def test_provider_connection(
+    base_url: str = Query(..., description="提供商的基础 URL"),
+    api_key: Optional[str] = Query(None, description="API Key（可选，用于验证 Key 有效性）"),
+    client_type: str = Query("openai", description="客户端类型 (openai | openai_responses | gemini)"),
+):
+    """测试任意厂商地址；该入口只允许访问公网目标。"""
+    return await _test_provider_connection(
+        base_url=base_url,
+        api_key=api_key,
+        client_type=client_type,
+    )
 
 
 @router.post("/test-connection-by-name")
@@ -449,8 +801,9 @@ async def test_provider_connection_by_name(
         raise HTTPException(status_code=400, detail="提供商配置缺少 base_url")
 
     # 调用测试接口
-    return await test_provider_connection(
+    return await _test_provider_connection(
         base_url=base_url,
         api_key=api_key if api_key else None,
         client_type=client_type,
+        allow_configured_private_network=True,
     )

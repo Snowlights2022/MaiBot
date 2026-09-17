@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'electron-vite'
 import path from 'path'
 
+import { dashboardVersionDefine } from './app-version'
+
 export default defineConfig({
   main: {
     build: {
@@ -14,7 +16,9 @@ export default defineConfig({
         output: {
           format: 'cjs',
         },
-        external: ['electron', 'electron-store'],
+        // electron-store 是 ESM-only 且位于 devDependencies，必须打进主进程产物。
+        // 只保留 Electron 运行时本身为 external，避免 CJS require ESM 及打包后缺包。
+        external: ['electron'],
       },
     },
     resolve: {
@@ -39,6 +43,7 @@ export default defineConfig({
   },
   renderer: {
     root: '.',
+    define: dashboardVersionDefine,
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
@@ -124,7 +129,6 @@ export default defineConfig({
               'clsx',
               'tailwind-merge',
               'class-variance-authority',
-              'axios',
             ],
 
             misc: ['react-joyride', 'react-day-picker', 'cmdk'],

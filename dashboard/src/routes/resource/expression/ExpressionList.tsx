@@ -5,15 +5,30 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Edit,
-  Eye,
+  ListFilter,
+  Star,
+  StarOff,
   Trash2,
-  X,
 } from 'lucide-react'
 import { useState } from 'react'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { ThinkingIllustration } from '@/components/ui/thinking-illustration'
 import {
   Table,
@@ -24,8 +39,11 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { useToast } from '@/hooks/use-toast'
+import { cn } from '@/lib/utils'
 
 import type { Expression } from '@/types/expression'
+
+type ReviewFilter = 'all' | 'user_checked' | 'unchecked'
 
 /**
  * 表达方式列表组件（桌面端Table + 移动端Card视图 + 分页）
@@ -39,14 +57,17 @@ export function ExpressionList({
   selectedIds,
   chatNameMap,
   hideChatColumn = false,
+  reviewFilter,
+  className,
   onEdit,
-  onViewDetail,
   onDelete,
+  onReviewFilterChange,
   onToggleReviewStatus,
   onToggleSelect,
   onToggleSelectAll,
   onPageChange,
   onJumpToPage,
+  onPageSizeChange,
 }: {
   expressions: Expression[]
   loading: boolean
@@ -56,14 +77,17 @@ export function ExpressionList({
   selectedIds: Set<number>
   chatNameMap: Map<string, string>
   hideChatColumn?: boolean
+  reviewFilter: ReviewFilter
+  className?: string
   onEdit: (expression: Expression) => void
-  onViewDetail: (expression: Expression) => void
   onDelete: (expression: Expression) => void
+  onReviewFilterChange: (filter: ReviewFilter) => void
   onToggleReviewStatus: (expression: Expression) => Promise<void>
   onToggleSelect: (id: number) => void
   onToggleSelectAll: () => void
   onPageChange: (newPage: number) => void
   onJumpToPage: (targetPage: string) => void
+  onPageSizeChange?: (newPageSize: number) => void
 }) {
   const { toast } = useToast()
   const [updatingReviewIds, setUpdatingReviewIds] = useState<Set<number>>(new Set())
@@ -76,7 +100,7 @@ export function ExpressionList({
     const modifier = expression.modified_by?.toLowerCase()
 
     if (expression.checked && modifier === 'user') {
-      return <Badge className="bg-green-600 whitespace-nowrap hover:bg-green-600">人工通过</Badge>
+      return <Check className="h-4 w-4 stroke-[3]" aria-label="已精选" />
     }
     return null
   }
@@ -115,9 +139,12 @@ export function ExpressionList({
   }
 
   return (
-    <div className="bg-card rounded-lg border">
+    <div className={cn('flex min-h-0 flex-col border-2 bg-transparent', className)}>
       {/* 桌面端表格视图 */}
-      <div className="hidden md:block">
+      <div
+        data-expression-table-viewport="true"
+        className="hidden min-h-0 flex-1 overflow-auto md:block"
+      >
         <Table aria-label="表达方式列表">
           <TableHeader>
             <TableRow>
@@ -130,7 +157,33 @@ export function ExpressionList({
               <TableHead>情境</TableHead>
               <TableHead>风格</TableHead>
               {!hideChatColumn && <TableHead>聊天</TableHead>}
-              <TableHead>审核</TableHead>
+              <TableHead>
+                <div className="flex items-center gap-1.5">
+                  <span>精选</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex h-7 w-7 items-center justify-center transition-colors focus-visible:ring-1 focus-visible:outline-none"
+                        title="筛选精选状态"
+                        aria-label="筛选精选状态"
+                      >
+                        <ListFilter className="h-3.5 w-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuRadioGroup
+                        value={reviewFilter}
+                        onValueChange={(value) => onReviewFilterChange(value as ReviewFilter)}
+                      >
+                        <DropdownMenuRadioItem value="all">全部</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="user_checked">已精选</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="unchecked">未精选</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </TableHead>
               <TableHead className="text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
@@ -190,13 +243,13 @@ export function ExpressionList({
                         className="h-8 w-8"
                         onClick={() => handleToggleReviewStatus(expression)}
                         disabled={updatingReviewIds.has(expression.id)}
-                        title={isUserApproved(expression) ? '拒绝' : '通过'}
-                        aria-label={isUserApproved(expression) ? '拒绝' : '通过'}
+                        title={isUserApproved(expression) ? '取消精选' : '精选'}
+                        aria-label={isUserApproved(expression) ? '取消精选' : '精选'}
                       >
                         {isUserApproved(expression) ? (
-                          <X className="h-4 w-4" />
+                          <StarOff className="h-4 w-4" />
                         ) : (
-                          <Check className="h-4 w-4" />
+                          <Star className="h-4 w-4" />
                         )}
                       </Button>
                       <Button
@@ -210,21 +263,13 @@ export function ExpressionList({
                         <Edit className="h-4 w-4" />
                       </Button>
                       <Button
-                        variant="outline"
                         size="icon"
-                        className="h-8 w-8"
-                        onClick={() => onViewDetail(expression)}
-                        title="查看详情"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        size="sm"
                         onClick={() => onDelete(expression)}
-                        className="bg-red-600 text-white hover:bg-red-700"
+                        className="h-8 w-8 bg-red-600 text-white hover:bg-red-700"
+                        title="删除"
+                        aria-label="删除"
                       >
-                        <Trash2 className="mr-1 h-4 w-4" />
-                        删除
+                        <Trash2 className="h-4 w-4" />
                       </Button>
                     </div>
                   </TableCell>
@@ -247,7 +292,7 @@ export function ExpressionList({
           expressions.map((expression) => (
             <div
               key={expression.id}
-              className="bg-card space-y-4 overflow-hidden rounded-lg border p-4"
+              className="space-y-4 overflow-hidden rounded-lg border bg-transparent p-4"
             >
               {/* 复选框和情境 */}
               <div className="flex items-start gap-3">
@@ -293,7 +338,7 @@ export function ExpressionList({
               )}
 
               <div className="text-sm">
-                <div className="text-muted-foreground mb-1 text-xs">审核</div>
+                <div className="text-muted-foreground mb-1 text-xs">精选</div>
                 <div className="flex flex-wrap items-center gap-2">
                   {getReviewBadge(expression)}
                 </div>
@@ -307,13 +352,13 @@ export function ExpressionList({
                   onClick={() => handleToggleReviewStatus(expression)}
                   disabled={updatingReviewIds.has(expression.id)}
                   className="h-9 w-full justify-center"
-                  title={isUserApproved(expression) ? '拒绝' : '通过'}
-                  aria-label={isUserApproved(expression) ? '拒绝' : '通过'}
+                  title={isUserApproved(expression) ? '取消精选' : '精选'}
+                  aria-label={isUserApproved(expression) ? '取消精选' : '精选'}
                 >
                   {isUserApproved(expression) ? (
-                    <X className="h-3 w-3" />
+                    <StarOff className="h-3 w-3" />
                   ) : (
-                    <Check className="h-3 w-3" />
+                    <Star className="h-3 w-3" />
                   )}
                 </Button>
                 <Button
@@ -325,15 +370,6 @@ export function ExpressionList({
                   aria-label="编辑"
                 >
                   <Edit className="h-3 w-3" />
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onViewDetail(expression)}
-                  className="h-9 justify-center px-2 text-xs"
-                >
-                  <Eye className="mr-1 h-3 w-3" />
-                  详情
                 </Button>
                 <Button
                   variant="outline"
@@ -358,6 +394,7 @@ export function ExpressionList({
           pageSize={pageSize}
           onPageChange={onPageChange}
           onJumpToPage={handleJumpToPage}
+          onPageSizeChange={onPageSizeChange}
         />
       )}
     </div>
@@ -373,12 +410,14 @@ function Pagination({
   pageSize,
   onPageChange,
   onJumpToPage,
+  onPageSizeChange,
 }: {
   total: number
   page: number
   pageSize: number
   onPageChange: (newPage: number) => void
   onJumpToPage: (targetPage: string) => void
+  onPageSizeChange?: (newPageSize: number) => void
 }) {
   const [jumpToPage, setJumpToPage] = useState('')
   const totalPages = Math.ceil(total / pageSize)
@@ -391,20 +430,45 @@ function Pagination({
   }
 
   return (
-    <div className="flex flex-col items-center justify-between gap-4 border-t px-4 py-4 sm:flex-row sm:py-3">
-      <div className="text-muted-foreground text-sm">
-        共 {total} 条记录，第 {page} / {totalPages} 页
+    <div className="flex flex-col items-center justify-between gap-2 border-t px-3 py-2 sm:flex-row sm:py-1.5">
+      <div className="text-muted-foreground flex items-center gap-2 text-xs">
+        <span>
+          {total} 条 · {page}/{totalPages}
+        </span>
+        {onPageSizeChange && (
+          <div className="flex items-center gap-1.5">
+            <Label htmlFor="page-size" className="whitespace-nowrap">
+              每页
+            </Label>
+            <Select
+              value={pageSize.toString()}
+              onValueChange={(value) => onPageSizeChange(parseInt(value))}
+            >
+              <SelectTrigger id="page-size" className="h-7 w-16 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10</SelectItem>
+                <SelectItem value="20">20</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
-      <div className="flex w-full flex-wrap items-center justify-center gap-2 sm:w-auto sm:flex-nowrap">
+      <div className="flex w-full flex-wrap items-center justify-center gap-1.5 sm:w-auto sm:flex-nowrap">
         {/* 首页 */}
         <Button
           variant="outline"
           size="sm"
           onClick={() => onPageChange(1)}
           disabled={page === 1}
-          className="hidden sm:flex"
+          className="hidden h-7 px-2 sm:flex"
+          title="首页"
+          aria-label="首页"
         >
-          <ChevronsLeft className="h-4 w-4" />
+          <ChevronsLeft className="h-3.5 w-3.5" />
         </Button>
 
         {/* 上一页 */}
@@ -413,20 +477,22 @@ function Pagination({
           size="sm"
           onClick={() => onPageChange(page - 1)}
           disabled={page === 1}
+          className="h-7 px-2"
+          title="上一页"
+          aria-label="上一页"
         >
-          <ChevronLeft className="h-4 w-4 sm:mr-1" />
-          <span className="hidden sm:inline">上一页</span>
+          <ChevronLeft className="h-3.5 w-3.5" />
         </Button>
 
         {/* 页码跳转 */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Input
             type="number"
             value={jumpToPage}
             onChange={(e) => setJumpToPage(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleJump()}
             placeholder={page.toString()}
-            className="h-9 w-16 text-center sm:h-8"
+            className="h-7 w-12 text-center text-xs"
             min={1}
             max={totalPages}
           />
@@ -435,9 +501,9 @@ function Pagination({
             size="sm"
             onClick={handleJump}
             disabled={!jumpToPage}
-            className="h-9 sm:h-8"
+            className="h-7 px-2 text-xs"
           >
-            跳转
+            跳
           </Button>
         </div>
 
@@ -447,9 +513,11 @@ function Pagination({
           size="sm"
           onClick={() => onPageChange(page + 1)}
           disabled={page >= totalPages}
+          className="h-7 px-2"
+          title="下一页"
+          aria-label="下一页"
         >
-          <span className="hidden sm:inline">下一页</span>
-          <ChevronRight className="h-4 w-4 sm:ml-1" />
+          <ChevronRight className="h-3.5 w-3.5" />
         </Button>
 
         {/* 末页 */}
@@ -458,9 +526,11 @@ function Pagination({
           size="sm"
           onClick={() => onPageChange(totalPages)}
           disabled={page >= totalPages}
-          className="hidden sm:flex"
+          className="hidden h-7 px-2 sm:flex"
+          title="末页"
+          aria-label="末页"
         >
-          <ChevronsRight className="h-4 w-4" />
+          <ChevronsRight className="h-3.5 w-3.5" />
         </Button>
       </div>
     </div>

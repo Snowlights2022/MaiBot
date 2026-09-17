@@ -20,7 +20,7 @@ DEFAULT_PROVIDER_TEMPLATES: list[dict[str, Any]] = [
 DEFAULT_TASK_CONFIG_TEMPLATES: dict[str, dict[str, Any]] = {
     "utils": {
         "model_list": ["deepseek-v4-flash"],
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "temperature": 0.5,
         "slow_threshold": 15.0,
         "selection_strategy": "random",
@@ -36,7 +36,7 @@ DEFAULT_TASK_CONFIG_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "mid_memory": {
         "model_list": [],
-        "max_tokens": 8000,
+        "max_tokens": 8192,
         "temperature": 0.7,
         "slow_threshold": 12.0,
         "selection_strategy": "random",
@@ -44,7 +44,7 @@ DEFAULT_TASK_CONFIG_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "replyer": {
         "model_list": ["deepseek-v4-pro-think", "deepseek-v4-pro-nonthink"],
-        "max_tokens": 4096,
+        "max_tokens": 8192,
         "temperature": 1,
         "slow_threshold": 120.0,
         "selection_strategy": "random",
@@ -52,25 +52,19 @@ DEFAULT_TASK_CONFIG_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "planner": {
         "model_list": ["deepseek-v4-flash"],
-        "max_tokens": 8000,
+        "max_tokens": 16384,
         "temperature": 0.7,
         "slow_threshold": 12.0,
         "selection_strategy": "random",
         "hard_timeout": 180.0,
     },
-    "timing_gate": {
-        "model_list": [],
-        "max_tokens": 4096,
-        "temperature": 0.3,
-        "slow_threshold": 12.0,
-        "selection_strategy": "random",
-        "hard_timeout": 120.0,
-    },
-    "learner": {"model_list": [], "max_tokens": 4096, "hard_timeout": 120.0},
-    "emoji": {"model_list": [], "max_tokens": 4096, "hard_timeout": 120.0},
-    "vlm": {"model_list": [], "max_tokens": 4096, "hard_timeout": 240.0},
-    "voice": {"model_list": [], "max_tokens": 4096, "hard_timeout": 120.0},
+    "learner": {"model_list": [], "max_tokens": 8192, "hard_timeout": 120.0},
+    "expression_use": {"model_list": [], "max_tokens": 8192, "temperature": 0.3, "hard_timeout": 120.0},
+    "emoji": {"model_list": [], "max_tokens": 8192, "hard_timeout": 120.0},
+    "vlm": {"model_list": [], "max_tokens": 8192, "hard_timeout": 240.0},
+    "voice": {"model_list": [], "max_tokens": 8192, "hard_timeout": 120.0},
     "embedding": {"model_list": [], "max_tokens": 4096, "hard_timeout": 60.0},
+    "image_embedding": {"model_list": [], "max_tokens": 4096, "hard_timeout": 60.0},
 }
 
 DEFAULT_MODEL_TEMPLATES: list[dict[str, Any]] = [
@@ -80,6 +74,7 @@ DEFAULT_MODEL_TEMPLATES: list[dict[str, Any]] = [
         "api_provider": "DeepSeek",
         "price_in": 12.0,
         "price_out": 24.0,
+        "send_temperature": True,
         "visual": False,
         "extra_params": {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
     },
@@ -89,6 +84,7 @@ DEFAULT_MODEL_TEMPLATES: list[dict[str, Any]] = [
         "api_provider": "DeepSeek",
         "price_in": 12.0,
         "price_out": 24.0,
+        "send_temperature": True,
         "visual": False,
         "extra_params": {"thinking": {"type": "disabled"}},
     },
@@ -98,6 +94,7 @@ DEFAULT_MODEL_TEMPLATES: list[dict[str, Any]] = [
         "api_provider": "DeepSeek",
         "price_in": 1.0,
         "price_out": 2.0,
+        "send_temperature": True,
         "visual": False,
         "extra_params": {"thinking": {"type": "disabled"}},
     },

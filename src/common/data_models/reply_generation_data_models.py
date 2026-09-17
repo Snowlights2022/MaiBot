@@ -11,10 +11,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from . import BaseDataModel
+from .llm_service_data_models import PromptMessage
 
 if TYPE_CHECKING:
     from src.common.data_models.message_component_data_model import MessageSequence
-    from src.common.data_models.llm_service_data_models import PromptMessage
     from src.llm_models.payload_content.tool_option import ToolCall
 
 
@@ -126,11 +126,22 @@ class ReplyGenerationResult(BaseDataModel):
         default=None,
         metadata={"description": "供监控层直接消费的通用 tool 展示详情。"},
     )
-    request_messages: List["PromptMessage"] = field(
-        default_factory=list,
-        metadata={"description": "本次 replyer 实际发送给模型的消息列表。"},
+    request_message_count: int = field(
+        default=0,
+        metadata={"description": "本次 replyer 实际发送给模型的消息数量。"},
     )
-
+    request_messages: List[PromptMessage] = field(
+        default_factory=list,
+        metadata={"description": "本次 replyer 的预览用 Context Item 快照列表。"},
+    )
+    output_items: List[PromptMessage] = field(
+        default_factory=list,
+        metadata={"description": "本次 replyer 的预览用输出 Item 快照列表。"},
+    )
+    generation_attempts: List[Dict[str, Any]] = field(
+        default_factory=list,
+        metadata={"description": "本次 replyer 完整的 Provider 调用诊断链。"},
+    )
 
 def _format_selected_expression_line(expression: Dict[str, Any], fallback_id: Optional[int] = None) -> str:
     """格式化单条已选表达方式，供终端与监控详情展示。"""
@@ -199,14 +210,21 @@ def build_reply_monitor_detail(result: ReplyGenerationResult) -> Dict[str, Any]:
     reasoning_text = result.completion.reasoning_text.strip()
     output_text = result.completion.response_text.strip()
 
-    if prompt_text:
-        detail["prompt_text"] = prompt_text
     if result.request_messages:
         detail["request_messages"] = result.request_messages
+    elif prompt_text:
+        detail["prompt_text"] = prompt_text
+    if result.request_message_count > 0:
+        detail["request_messages_sanitized"] = bool(result.request_messages)
+        detail["request_message_count"] = result.request_message_count
     if reasoning_text:
         detail["reasoning_text"] = reasoning_text
     if output_text:
         detail["output_text"] = output_text
+    if result.output_items:
+        detail["output_items"] = result.output_items
+    if result.generation_attempts:
+        detail["generation_attempts"] = result.generation_attempts
 
     metrics: Dict[str, Any] = {}
     if result.completion.model_name.strip():

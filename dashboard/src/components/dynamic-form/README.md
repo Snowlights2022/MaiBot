@@ -46,7 +46,6 @@ You can customize how fields are rendered by adding `json_schema_extra` to your 
   - `textarea`: A multi-line text input.
   - `select`: A dropdown menu (for `Literal` or enum types).
   - `custom`: Indicates that this field requires a Hook for rendering.
-- `x-icon`: A Lucide icon name (e.g., `MessageSquare`, `Settings`).
 - `step`: Incremental step for sliders or number inputs.
 
 ### Example
@@ -58,14 +57,14 @@ class ChatConfig(ConfigBase):
         le=1.0,
         json_schema_extra={
             "x-widget": "slider",
-            "x-icon": "MessageSquare",
             "step": 0.1
         }
     )
 ```
 
 ## Creating Hook Components
-Hooks allow you to provide custom UI for complex configuration sections or fields.
+Hooks allow you to provide custom UI for complex fields. Prefer backend schema metadata for
+ordinary layout, labels, defaults, options, and validation ranges.
 
 ### FieldHookComponent Interface
 A Hook component receives the following props:
@@ -78,18 +77,22 @@ A Hook component receives the following props:
 ```typescript
 import type { FieldHookComponent } from '@/lib/field-hooks'
 
-export const CustomSectionHook: FieldHookComponent = ({
+export const TalkValueRulesHook: FieldHookComponent = ({
   fieldPath,
   value,
   onChange
 }) => {
+  const rules = Array.isArray(value) ? value : []
+
   return (
-    <div className="custom-section">
-      <h3>Custom UI</h3>
-      <input 
-        value={value.some_prop} 
-        onChange={(e) => onChange({ ...value, some_prop: e.target.value })}
-      />
+    <div>
+      <h3>{fieldPath}</h3>
+      <button
+        type="button"
+        onClick={() => onChange([...rules, { platform: '', item_id: '', value: 1 }])}
+      >
+        Add rule
+      </button>
     </div>
   )
 }
@@ -99,8 +102,8 @@ export const CustomSectionHook: FieldHookComponent = ({
 Register hooks in your component's lifecycle:
 ```typescript
 useEffect(() => {
-  fieldHooks.register('chat', ChatSectionHook, 'replace')
-  return () => fieldHooks.unregister('chat')
+  fieldHooks.register('chat.reply_timing.talk_value_rules', TalkValueRulesHook, 'replace')
+  return () => fieldHooks.unregister('chat.reply_timing.talk_value_rules')
 }, [])
 ```
 

@@ -1,5 +1,5 @@
 import * as React from "react"
-import * as LucideIcons from "lucide-react"
+import { CircleAlert, Plus, Trash2 } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
@@ -25,11 +25,6 @@ import { fieldTitleClassName } from "./fieldStyle"
 
 const ARRAY_DRAFT_LINE_PATTERN = /\r\n|\n|\r/
 const TAG_DRAFT_SPLIT_PATTERN = /[\r\n,，;；]+/
-const VISUAL_INLINE_FIELD_NAMES = new Set([
-  'planner_mode',
-  'replyer_mode',
-  'wait_image_recognize_max_time',
-])
 
 export interface DynamicFieldProps {
   schema: FieldSchema
@@ -130,25 +125,40 @@ function PrimitiveArrayEditor({
   )
 }
 
-function StringArrayTagsEditor({
+type TokenListEditorMode = 'array' | 'comma-string'
+
+function TokenListEditor({
+  mode,
   onChange,
   schema,
   value,
-}: Pick<DynamicFieldProps, 'onChange' | 'schema' | 'value'>) {
-  const arrayValue = React.useMemo(
-    () => resolvePrimitiveArrayValue(value, schema.default).map((item) => String(item ?? '')),
-    [schema.default, value],
+}: Pick<DynamicFieldProps, 'onChange' | 'schema' | 'value'> & { mode: TokenListEditorMode }) {
+  const items = React.useMemo(
+    () => {
+      if (mode === 'array') {
+        return resolvePrimitiveArrayValue(value, schema.default).map((item) => String(item ?? ''))
+      }
+
+      const stringValue = typeof value === 'string' ? value : String(schema.default ?? '')
+      return stringValue
+        .split(/[,，]/)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0)
+    },
+    [mode, schema.default, value],
   )
   const [draftValue, setDraftValue] = React.useState('')
   const fieldLabel = resolveFieldLabel(schema)
+  const placeholder = schema['x-placeholder'] ?? '输入后按回车添加'
 
   const commitItems = (nextItems: string[]) => {
-    onChange(nextItems.filter((item) => item.trim().length > 0))
+    const cleanItems = nextItems.filter((item) => item.trim().length > 0)
+    onChange(mode === 'array' ? cleanItems : cleanItems.join(','))
   }
 
   const addDraftItems = () => {
     const draftItems = draftValue
-      .split(TAG_DRAFT_SPLIT_PATTERN)
+      .split(mode === 'array' ? TAG_DRAFT_SPLIT_PATTERN : /[,，]/)
       .map((item) => item.trim())
       .filter((item) => item.length > 0)
 
@@ -156,12 +166,12 @@ function StringArrayTagsEditor({
       return
     }
 
-    commitItems(Array.from(new Set([...arrayValue, ...draftItems])))
+    commitItems(Array.from(new Set([...items, ...draftItems])))
     setDraftValue('')
   }
 
   const removeItem = (targetIndex: number) => {
-    commitItems(arrayValue.filter((_, index) => index !== targetIndex))
+    commitItems(items.filter((_, index) => index !== targetIndex))
   }
 
   return (
@@ -169,7 +179,7 @@ function StringArrayTagsEditor({
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_2.25rem] gap-2">
         <Input
           value={draftValue}
-          placeholder="qq:123456789"
+          placeholder={placeholder}
           onChange={(event) => setDraftValue(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
@@ -187,12 +197,12 @@ function StringArrayTagsEditor({
           title={`添加${fieldLabel}`}
           onClick={addDraftItems}
         >
-          <LucideIcons.Plus className="h-4 w-4" />
+          <Plus className="h-4 w-4" />
         </Button>
       </div>
-      {arrayValue.length > 0 && (
+      {items.length > 0 && (
         <div className="space-y-1.5">
-          {arrayValue.map((item, index) => (
+          {items.map((item, index) => (
             <div
               key={`${item}-${index}`}
               className="grid min-w-0 grid-cols-[minmax(0,1fr)_2rem] items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-2"
@@ -207,7 +217,7 @@ function StringArrayTagsEditor({
                 title={`删除${item}`}
                 onClick={() => removeItem(index)}
               >
-                <LucideIcons.Trash2 className="h-4 w-4" />
+                <Trash2 className="h-4 w-4" />
               </Button>
             </div>
           ))}
@@ -228,6 +238,7 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
   schema,
   value,
   onChange,
+  fieldPath,
 }) => {
   const { i18n } = useTranslation()
   const fieldLabel = resolveFieldLabel(schema, i18n.language)
@@ -279,10 +290,6 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
     return <PrimitiveArrayEditor schema={schema} value={value} onChange={onChange} />
   }
 
-  const renderStringArrayTagsEditor = () => {
-    return <StringArrayTagsEditor schema={schema} value={value} onChange={onChange} />
-  }
-
   const renderObjectEditor = () => {
     const objectValue =
       value && typeof value === 'object' && !Array.isArray(value)
@@ -297,19 +304,8 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
     )
   }
 
-  /**
-   * 渲染字段图标
-   */
-  const renderIcon = () => {
-    if (!schema['x-icon']) return null
-    
-    const IconComponent = LucideIcons[schema['x-icon'] as keyof typeof LucideIcons] as React.ComponentType<{ className?: string }> | undefined
-    if (!IconComponent) return null
-    
-    return <IconComponent className="h-4 w-4" />
-  }
-
   const optionDescriptions = schema['x-option-descriptions'] ?? {}
+  const optionLabels = schema['x-option-labels'] ?? {}
   const hasOptionDescriptions = Object.keys(optionDescriptions).length > 0
   const descriptionDisplay = schema['x-description-display'] ?? 'label-hover'
   const fieldDescription = schema.description
@@ -327,7 +323,7 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
           <TooltipContent
             side={side}
             align="start"
-            className="max-w-80 whitespace-pre-line bg-background text-foreground border shadow-lg"
+            className="max-w-80 whitespace-pre-line bg-popover text-popover-foreground"
           >
             {fieldDescription}
           </TooltipContent>
@@ -349,7 +345,6 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
               descriptionDisplay === 'label-hover' && fieldDescription && "cursor-help",
             )}
           >
-            {renderIcon()}
             <span className="break-words">{fieldLabel}</span>
             {schema.required && <span className="text-destructive">*</span>}
           </Label>
@@ -366,7 +361,7 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
             aria-label={`${fieldLabel} 说明`}
             className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <LucideIcons.CircleAlert className="h-4 w-4" />
+            <CircleAlert className="h-4 w-4" />
           </button>,
           'right',
         )
@@ -405,9 +400,14 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
           return renderSwitch()
         case 'tags':
           if (type === 'array' && schema.items?.type === 'string') {
-            return renderStringArrayTagsEditor()
+            return <TokenListEditor mode="array" schema={schema} value={value} onChange={onChange} />
           }
           return renderPrimitiveArrayEditor()
+        case 'comma-list':
+          if (type === 'string') {
+            return <TokenListEditor mode="comma-string" schema={schema} value={value} onChange={onChange} />
+          }
+          return renderTextInput()
         case 'talk-time':
           return renderTalkTimeInput()
         case 'textarea':
@@ -472,7 +472,11 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
   const renderSwitch = () => {
     const checked = Boolean(value)
     return (
-      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-1.5">
+      <div
+        data-dynamic-field={fieldPath ?? schema.name}
+        data-dynamic-field-widget="switch"
+        className="grid min-h-10 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-1.5"
+      >
         <div className="min-w-0">
           {renderFieldHeader()}
         </div>
@@ -684,6 +688,7 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
   const renderSelect = () => {
     const strValue = typeof value === 'string' ? value : (schema.default as string ?? '')
     const options = schema.options ?? []
+    const renderOptionLabel = (option: string) => optionLabels[option] ?? option
 
     if (options.length === 0) {
       return (
@@ -710,20 +715,20 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
                   <Tooltip key={option}>
                     <TooltipTrigger asChild>
                       <SelectItem value={option} title={description}>
-                        {option}
+                        {renderOptionLabel(option)}
                       </SelectItem>
                     </TooltipTrigger>
                     <TooltipContent
                       side="right"
                       align="center"
-                      className="max-w-72 bg-background text-foreground border shadow-lg"
+                      className="max-w-72 bg-popover text-popover-foreground"
                     >
                       {description}
                     </TooltipContent>
                   </Tooltip>
                 ) : (
                   <SelectItem key={option} value={option}>
-                    {option}
+                    {renderOptionLabel(option)}
                   </SelectItem>
                 )
               })}
@@ -731,7 +736,7 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
           ) : (
             options.map((option) => (
               <SelectItem key={option} value={option}>
-                {option}
+                {renderOptionLabel(option)}
               </SelectItem>
             ))
           )}
@@ -744,16 +749,16 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
   const isBoolean =
     schema['x-widget'] === 'switch' ||
     (!schema['x-widget'] && schema.type === 'boolean')
-  const isVisualInlineField = VISUAL_INLINE_FIELD_NAMES.has(schema.name)
   const supportsInlineRight =
-    (schema['x-layout'] === 'inline-right' || isVisualInlineField) &&
+    schema['x-layout'] === 'inline-right' &&
     ['input', 'number', 'password', 'select', undefined].includes(schema['x-widget']) &&
     ['string', 'number', 'integer', 'select'].includes(schema.type)
   const defaultInlineRightInputWidth = isNumericField ? '7.5rem' : '12rem'
   const schemaInputWidth = schema['x-input-width']
-  const inlineRightInputWidth = isNumericField && (!schemaInputWidth || schemaInputWidth === '12rem')
-    ? defaultInlineRightInputWidth
-    : schemaInputWidth ?? defaultInlineRightInputWidth
+  const inlineRightInputWidth =
+    isNumericField && (!schemaInputWidth || schemaInputWidth === '12rem')
+      ? defaultInlineRightInputWidth
+      : schemaInputWidth ?? defaultInlineRightInputWidth
   const inlineRightInputStyle = supportsInlineRight ? { width: inlineRightInputWidth } : undefined
   const inlineRightInputClassName = supportsInlineRight ? '!w-[var(--field-input-width)]' : undefined
 
@@ -765,7 +770,9 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
   if (supportsInlineRight) {
     return (
       <div
-        className="grid min-w-0 grid-cols-1 items-center gap-1.5 py-1.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-3"
+        data-dynamic-field={fieldPath ?? schema.name}
+        data-dynamic-field-widget={schema['x-widget'] ?? schema.type}
+        className="grid min-h-10 min-w-0 grid-cols-1 items-center gap-1.5 py-1.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-3"
         style={{ '--field-input-width': inlineRightInputWidth } as React.CSSProperties}
       >
         <div className="min-w-0">
@@ -779,7 +786,11 @@ export const DynamicField: React.FC<DynamicFieldProps> = ({
   }
 
   return (
-    <div className="min-w-0 space-y-1.5">
+    <div
+      data-dynamic-field={fieldPath ?? schema.name}
+      data-dynamic-field-widget={schema['x-widget'] ?? schema.type}
+      className="min-w-0 space-y-1.5"
+    >
       {renderFieldHeader()}
 
       {/* Input component */}

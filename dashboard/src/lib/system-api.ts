@@ -1,24 +1,20 @@
-import { fetchWithAuth, getAuthHeaders } from './fetch-with-auth'
-
 /**
  * 系统控制 API
+ *
+ * 请求样板（认证、解析、错误格式化）由 @/lib/http 的请求客户端承担；
+ * 本文件只声明 endpoint、业务错误文案与响应类型。
+ * 公开函数保持 throw 契约：失败时抛出 ApiError，由调用方自行 catch
+ * （例如重启期间后端短暂不可达导致的预期失败）。
  */
+import { backendApi } from '@/lib/http'
 
 /**
  * 重启麦麦主程序
  */
 export async function restartMaiBot(): Promise<{ success: boolean; message: string }> {
-  const response = await fetchWithAuth('/api/webui/system/restart', {
-    method: 'POST',
-    headers: getAuthHeaders(),
+  return backendApi.post<{ success: boolean; message: string }>('/api/webui/system/restart', {
+    errorMessage: '重启失败',
   })
-  
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '重启失败')
-  }
-  
-  return await response.json()
 }
 
 /**
@@ -30,17 +26,83 @@ export async function getMaiBotStatus(): Promise<{
   version: string
   start_time: string
 }> {
-  const response = await fetchWithAuth('/api/webui/system/status', {
-    method: 'GET',
-    headers: getAuthHeaders(),
+  return backendApi.get<{
+    running: boolean
+    uptime: number
+    version: string
+    start_time: string
+  }>('/api/webui/system/status', {
+    errorMessage: '获取状态失败',
   })
-  
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取状态失败')
-  }
-  
-  return await response.json()
+}
+
+export interface UpdateNoticeResponse {
+  pending: boolean
+  current_version: string
+  from_version: string | null
+  versions: string[]
+  content: string
+  incompatible_plugins: IncompatiblePluginNotice[]
+}
+
+export type PluginUpdateCheckStatus =
+  | 'checking'
+  | 'available'
+  | 'unavailable'
+  | 'not_found'
+  | 'check_failed'
+
+export interface IncompatiblePluginNotice {
+  plugin_id: string
+  name: string
+  installed_version: string
+  host_min_version: string
+  host_max_version: string
+  update_status: PluginUpdateCheckStatus
+  update_version: string | null
+}
+
+export interface UpdateNoticeAckResponse {
+  success: boolean
+  message: string
+  version: string
+}
+
+export interface UpdateHistoryEntry {
+  version: string
+  title: string
+  content: string
+}
+
+export interface UpdateHistoryResponse {
+  entries: UpdateHistoryEntry[]
+  next_offset: number
+  has_more: boolean
+}
+
+export async function getUpdateNotice(force = false): Promise<UpdateNoticeResponse> {
+  return backendApi.get<UpdateNoticeResponse>('/api/webui/system/update-notice', {
+    errorMessage: '获取更新公告失败',
+    query: { force: force ? true : undefined },
+  })
+}
+
+export async function ackUpdateNotice(): Promise<UpdateNoticeAckResponse> {
+  return backendApi.post<UpdateNoticeAckResponse>('/api/webui/system/update-notice/ack', {
+    errorMessage: '确认更新公告失败',
+  })
+}
+
+export async function getUpdateHistory(
+  offset = 0,
+  limit = 3,
+  beforeVersion?: string,
+  section?: 'webui'
+): Promise<UpdateHistoryResponse> {
+  return backendApi.get<UpdateHistoryResponse>('/api/webui/system/update-history', {
+    errorMessage: '获取历史更新记录失败',
+    query: { offset, limit, before_version: beforeVersion, section },
+  })
 }
 
 export interface CacheDirectoryStats {
@@ -190,7 +252,10 @@ export interface LocalCacheDatabaseVacuumResult {
   checkpointed: number
 }
 
-export function getLocalCacheImagePreviewUrl(target: LocalCacheImageTarget, relativePath: string): string {
+export function getLocalCacheImagePreviewUrl(
+  target: LocalCacheImageTarget,
+  relativePath: string
+): string {
   const query = new URLSearchParams({
     target,
     relative_path: relativePath,
@@ -199,82 +264,45 @@ export function getLocalCacheImagePreviewUrl(target: LocalCacheImageTarget, rela
 }
 
 export async function getLocalCacheStats(): Promise<LocalCacheStats> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache', {
-    method: 'GET',
-    headers: getAuthHeaders(),
+  return backendApi.get<LocalCacheStats>('/api/webui/system/local-cache', {
+    errorMessage: '获取本地缓存统计失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取本地缓存统计失败')
-  }
-
-  return await response.json()
 }
 
 export async function getLocalCacheDatabaseStats(): Promise<DatabaseStorageStats> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/database', {
-    method: 'GET',
-    headers: getAuthHeaders(),
+  return backendApi.get<DatabaseStorageStats>('/api/webui/system/local-cache/database', {
+    errorMessage: '获取数据库统计失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取数据库统计失败')
-  }
-
-  return await response.json()
 }
 
 export async function vacuumLocalCacheDatabase(): Promise<LocalCacheDatabaseVacuumResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/database/vacuum', {
-    method: 'POST',
-    headers: getAuthHeaders(),
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '数据库 VACUUM 失败')
-  }
-
-  return await response.json()
+  return backendApi.post<LocalCacheDatabaseVacuumResult>(
+    '/api/webui/system/local-cache/database/vacuum',
+    {
+      errorMessage: '数据库 VACUUM 失败',
+    }
+  )
 }
 
-export async function getLocalCacheDataEntries(relativePath = ''): Promise<LocalCacheDataEntriesResponse> {
-  const query = new URLSearchParams()
-  if (relativePath) {
-    query.set('relative_path', relativePath)
-  }
-
-  const response = await fetchWithAuth(`/api/webui/system/local-cache/data-entries?${query.toString()}`, {
-    method: 'GET',
-    headers: getAuthHeaders(),
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取 data 目录失败')
-  }
-
-  return await response.json()
+export async function getLocalCacheDataEntries(
+  relativePath = ''
+): Promise<LocalCacheDataEntriesResponse> {
+  return backendApi.get<LocalCacheDataEntriesResponse>(
+    '/api/webui/system/local-cache/data-entries',
+    {
+      query: { relative_path: relativePath || undefined },
+      errorMessage: '获取 data 目录失败',
+    }
+  )
 }
 
-export async function deleteLocalCacheDataEntry(relativePath: string): Promise<LocalCacheCleanupResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/data-entries', {
-    method: 'DELETE',
-    headers: {
-      ...getAuthHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ relative_path: relativePath }),
+export async function deleteLocalCacheDataEntry(
+  relativePath: string
+): Promise<LocalCacheCleanupResult> {
+  return backendApi.delete<LocalCacheCleanupResult>('/api/webui/system/local-cache/data-entries', {
+    body: { relative_path: relativePath },
+    errorMessage: '删除 data 条目失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '删除 data 条目失败')
-  }
-
-  return await response.json()
 }
 
 export async function cleanupLocalCache(
@@ -286,27 +314,16 @@ export async function cleanupLocalCache(
     vacuum_after_cleanup?: boolean
   } = {}
 ): Promise<LocalCacheCleanupResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/cleanup', {
-    method: 'POST',
-    headers: {
-      ...getAuthHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
+  return backendApi.post<LocalCacheCleanupResult>('/api/webui/system/local-cache/cleanup', {
+    body: {
       target,
       tables,
       database_mode: options.database_mode ?? 'all',
       older_than_days: options.older_than_days ?? null,
       vacuum_after_cleanup: options.vacuum_after_cleanup ?? true,
-    }),
+    },
+    errorMessage: '清理本地缓存失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '清理本地缓存失败')
-  }
-
-  return await response.json()
 }
 
 export async function getLocalCacheImages(params: {
@@ -316,50 +333,26 @@ export async function getLocalCacheImages(params: {
   start_date?: string
   end_date?: string
 }): Promise<LocalCacheImageListResponse> {
-  const query = new URLSearchParams({
-    target: params.target,
-    page: (params.page ?? 1).toString(),
-    page_size: (params.page_size ?? 40).toString(),
+  return backendApi.get<LocalCacheImageListResponse>('/api/webui/system/local-cache/images', {
+    query: {
+      target: params.target,
+      page: params.page ?? 1,
+      page_size: params.page_size ?? 40,
+      start_date: params.start_date || undefined,
+      end_date: params.end_date || undefined,
+    },
+    errorMessage: '获取本地缓存图片列表失败',
   })
-  if (params.start_date) {
-    query.set('start_date', params.start_date)
-  }
-  if (params.end_date) {
-    query.set('end_date', params.end_date)
-  }
-
-  const response = await fetchWithAuth(`/api/webui/system/local-cache/images?${query.toString()}`, {
-    method: 'GET',
-    headers: getAuthHeaders(),
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取本地缓存图片列表失败')
-  }
-
-  return await response.json()
 }
 
 export async function deleteLocalCacheImage(
   target: LocalCacheImageTarget,
   relativePath: string
 ): Promise<LocalCacheCleanupResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/images', {
-    method: 'DELETE',
-    headers: {
-      ...getAuthHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ target, relative_path: relativePath }),
+  return backendApi.delete<LocalCacheCleanupResult>('/api/webui/system/local-cache/images', {
+    body: { target, relative_path: relativePath },
+    errorMessage: '删除本地缓存图片失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '删除本地缓存图片失败')
-  }
-
-  return await response.json()
 }
 
 export async function deleteLocalCacheImagesByDateRange(
@@ -367,81 +360,48 @@ export async function deleteLocalCacheImagesByDateRange(
   startDate: string,
   endDate: string
 ): Promise<LocalCacheCleanupResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/images/bulk', {
-    method: 'DELETE',
-    headers: {
-      ...getAuthHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
+  return backendApi.delete<LocalCacheCleanupResult>('/api/webui/system/local-cache/images/bulk', {
+    body: {
       target,
       mode: 'date_range',
       start_date: startDate || null,
       end_date: endDate || null,
-    }),
+    },
+    errorMessage: '按日期删除缓存失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '按日期删除缓存失败')
-  }
-
-  return await response.json()
 }
 
 export async function deleteLocalCacheImagesOlderThanRecentDays(
   target: LocalCacheImageTarget,
   keepRecentDays: 1 | 7 | 30
 ): Promise<LocalCacheCleanupResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/images/bulk', {
-    method: 'DELETE',
-    headers: {
-      ...getAuthHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
+  return backendApi.delete<LocalCacheCleanupResult>('/api/webui/system/local-cache/images/bulk', {
+    body: {
       target,
       mode: 'older_than_recent_days',
       keep_recent_days: keepRecentDays,
-    }),
+    },
+    errorMessage: '清理过期缓存失败',
   })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '清理过期缓存失败')
-  }
-
-  return await response.json()
 }
 
 export async function getLocalCacheLogDirectories(): Promise<LocalCacheLogDirectoryListResponse> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/log-directories', {
-    method: 'GET',
-    headers: getAuthHeaders(),
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '获取日志目录列表失败')
-  }
-
-  return await response.json()
+  return backendApi.get<LocalCacheLogDirectoryListResponse>(
+    '/api/webui/system/local-cache/log-directories',
+    {
+      errorMessage: '获取日志目录列表失败',
+    }
+  )
 }
 
-export async function deleteLocalCacheLogDirectory(relativePath: string): Promise<LocalCacheCleanupResult> {
-  const response = await fetchWithAuth('/api/webui/system/local-cache/log-directories', {
-    method: 'DELETE',
-    headers: {
-      ...getAuthHeaders(),
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ relative_path: relativePath }),
-  })
-
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || '清理日志目录失败')
-  }
-
-  return await response.json()
+export async function deleteLocalCacheLogDirectory(
+  relativePath: string
+): Promise<LocalCacheCleanupResult> {
+  return backendApi.delete<LocalCacheCleanupResult>(
+    '/api/webui/system/local-cache/log-directories',
+    {
+      body: { relative_path: relativePath },
+      errorMessage: '清理日志目录失败',
+    }
+  )
 }

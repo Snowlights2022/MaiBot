@@ -1,4 +1,13 @@
 data/
+# Local roleplay benchmark data
+tools/roleplay_benchmark/
+tools/roleplay_benchmark/data/agent_scores.json
+tools/roleplay_benchmark/data/benchmark_split.json
+tools/roleplay_benchmark/data/discarded_samples.json
+tools/roleplay_benchmark/data/human_scores.json
+tools/roleplay_benchmark/data/sample_cache.json
+tools/roleplay_benchmark/data/agent_prompts/
+tools/roleplay_benchmark/data/server.*.log
 !pytests/A_memorix_test/data/
 !pytests/A_memorix_test/data/benchmarks/
 !pytests/A_memorix_test/data/benchmarks/long_novel_memory_benchmark.json
@@ -6,6 +15,7 @@ data/
 !pytests/A_memorix_test/data/real_dialogues/private_alice_weekend.json
 pytests/A_memorix_test/data/benchmarks/results/
 data1/
+start_all_memory_limited.bat
 mongodb/
 NapCat.Framework.Windows.Once/
 NapCat.Framework.Windows.OneKey/
@@ -66,10 +76,6 @@ dist-ssr/
 # Custom MaiBot config for Docker Deployments
 docker-config/
 
-# 开发容器隔离数据（与生产 data/ 和 docker-config/ 分离）
-data-dev/
-docker-config-dev/
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -109,9 +115,8 @@ wheels/
 
 # Dev container config
 .devcontainer/devcontainer-lock.json
-# DooD 自动生成：compose 覆写文件（包含宿主机绝对路径，不可提交）
+# DooD 自动生成的 compose override，包含宿主机绝对路径，不可提交；仅在 devcontainer 内通过 COMPOSE_FILE 加载
 docker-compose.devcontainer.yml
-docker-compose.dood-pathfix.yml
 
 share/python-wheels/
 *.egg-info/
@@ -289,6 +294,8 @@ OtherRes.txt
 logs
 
 .ruff_cache
+.codex-runtime/
+unsloth_compiled_cache/
 
 .vscode
 
@@ -352,6 +359,7 @@ $RECYCLE.BIN/
 src/chat/focus_chat/working_memory/test/test1.txt
 src/chat/focus_chat/working_memory/test/test4.txt
 run_maiserver.bat
+start_maibot.cmd
 src/plugins/test_plugin_pic/actions/pic_action_config.toml
 run_pet.bat
 
@@ -373,6 +381,10 @@ packages/
 ## Claude Code and OMC data
 .claude/
 .omc/
+.zcode/
 /.venv312
 /src/A_memorix/algorithm_redesign
 agentlite/
+/qwen_mai/
+/MaiMaiFocusPet-Godot/
+start_mac.command

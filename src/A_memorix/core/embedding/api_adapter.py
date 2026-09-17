@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -60,6 +62,8 @@ class EmbeddingAPIAdapter:
         self._total_encoded = 0
         self._total_errors = 0
         self._total_time = 0.0
+        self._last_success_model_name = ""
+        self._last_success_provider_name = ""
 
         logger.info(
             "Embedding 初始化: "
@@ -95,6 +99,58 @@ class EmbeddingAPIAdapter:
         if self.model_name and self.model_name != "auto":
             return [self.model_name, *[name for name in configured if name != self.model_name]]
         return configured
+
+    @staticmethod
+    def _fingerprint_hash(payload: Dict[str, Any]) -> str:
+        normalized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        return f"sha256:{digest}"
+
+    def _resolve_model_provider_name(self, model_name: str) -> str:
+        token = str(model_name or "").strip()
+        if not token:
+            return ""
+        try:
+            return str(self._find_model_info(token).api_provider or "").strip()
+        except Exception:
+            return ""
+
+    def get_embedding_fingerprint(self, *, dimension: Optional[int] = None) -> Dict[str, Any]:
+        """返回当前适配器所用向量空间的精简指纹。"""
+        effective_dimension = max(1, int(dimension or self.get_embedding_dimension()))
+        model_token = str(self._last_success_model_name or "").strip()
+        provider_token = str(self._last_success_provider_name or "").strip()
+        source = "observed" if model_token else "configured"
+        candidate_names = [
+            str(item or "").strip() for item in self._resolve_candidate_model_names() if str(item or "").strip()
+        ]
+        if not model_token:
+            model_token = str(self.model_name or "auto").strip() or "auto"
+            if model_token == "auto" and candidate_names:
+                model_token = candidate_names[0]
+            if model_token != "auto":
+                provider_token = self._resolve_model_provider_name(model_token)
+        if model_token == "auto":
+            provider_token = ""
+
+        compare_payload: Dict[str, Any] = {
+            "model": model_token,
+            "provider": provider_token,
+            "dimension": effective_dimension,
+            "dimension_request_mode": self.dimension_request_mode,
+        }
+        if model_token == "auto":
+            compare_payload["candidate_models"] = candidate_names
+
+        return {
+            "version": 1,
+            "hash": self._fingerprint_hash(compare_payload),
+            "model": model_token,
+            "provider": provider_token,
+            "dimension": effective_dimension,
+            "dimension_request_mode": self.dimension_request_mode,
+            "source": source,
+        }
 
     def get_requested_dimension(self) -> int:
         if self._dimension is not None:
@@ -227,13 +283,11 @@ class EmbeddingAPIAdapter:
             try:
                 model_info = self._find_model_info(candidate_name)
                 api_provider = self._find_provider(model_info.api_provider)
-                client = client_registry.get_client_class_instance(api_provider, force_new=True)
+                client = client_registry.get_client_class_instance(api_provider)
 
                 should_include_dimension = self._should_include_dimension(dimensions, include_dimension)
                 requested_dimension = (
-                    self._resolve_canonical_dimension(dimensions)
-                    if should_include_dimension
-                    else None
+                    self._resolve_canonical_dimension(dimensions) if should_include_dimension else None
                 )
                 extra_params = self._build_request_extra_params(
                     api_provider=api_provider,
@@ -255,6 +309,8 @@ class EmbeddingAPIAdapter:
                     embedding,
                     source=f"embedding 模型 {candidate_name}",
                 )
+                self._last_success_model_name = str(candidate_name or "").strip()
+                self._last_success_provider_name = str(model_info.api_provider or "").strip()
                 return vector.tolist()
             except Exception as exc:
                 last_exc = exc
@@ -344,7 +400,9 @@ class EmbeddingAPIAdapter:
         start_time = time.time()
         if dimensions is None or self.dimension_request_mode == "never":
             target_dim = int(await self._detect_dimension())
-            requested_dimension = None if self.dimension_request_mode != "always" else self._resolve_canonical_dimension()
+            requested_dimension = (
+                None if self.dimension_request_mode != "always" else self._resolve_canonical_dimension()
+            )
         else:
             target_dim = self._resolve_canonical_dimension(dimensions)
             requested_dimension = target_dim
@@ -416,8 +474,13 @@ class EmbeddingAPIAdapter:
 
             semaphore = asyncio.Semaphore(self.max_concurrent)
 
-            async def encode_with_semaphore(text: str, batch_index: int, absolute_index: int):
-                async with semaphore:
+            async def encode_with_semaphore(
+                text: str,
+                batch_index: int,
+                absolute_index: int,
+                _semaphore: asyncio.Semaphore = semaphore,
+            ):
+                async with _semaphore:
                     embedding = await self._get_embedding_direct(text, dimensions=dimensions)
                     if embedding is None:
                         raise RuntimeError(f"文本 {absolute_index} 编码失败：embedding 返回为空")
@@ -427,10 +490,7 @@ class EmbeddingAPIAdapter:
                     )
                     return batch_index, vector
 
-            tasks = [
-                encode_with_semaphore(text, index, offset + index)
-                for index, text in uncached_items
-            ]
+            tasks = [encode_with_semaphore(text, index, offset + index) for index, text in uncached_items]
             results = await asyncio.gather(*tasks)
             normalized_results: List[Tuple[int, np.ndarray]] = []
             for batch_index, vector in results:

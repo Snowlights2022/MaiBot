@@ -3,12 +3,12 @@ import type { ReactNode } from 'react'
 
 import { ThemeProviderContext } from '@/lib/theme-context'
 import { getBotConfig, updateBotConfigSection } from '@/lib/config-api'
+import { buildFutureRetroTexture } from '@/lib/theme/future-retro'
 import { DEFAULT_DASHBOARD_STYLE, DEFAULT_FUTURE_RETRO_STYLE_CONFIG } from '@/lib/theme/tokens'
 import type { DashboardStyle, UserThemeConfig } from '@/lib/theme/tokens'
 import {
   THEME_STORAGE_KEYS,
   loadThemeConfig,
-  migrateOldKeys,
   resetThemeToDefault,
   saveThemePartial,
 } from '@/lib/theme/storage'
@@ -37,7 +37,6 @@ function shouldSyncRemoteWebUIStyle(): boolean {
 export function ThemeProvider({
   children,
   defaultTheme = 'system',
-  storageKey: _storageKey,
 }: ThemeProviderProps) {
   const [themeMode, setThemeMode] = useState<Theme>(() => {
     const saved = localStorage.getItem(THEME_STORAGE_KEYS.MODE) as Theme | null
@@ -48,13 +47,10 @@ export function ThemeProvider({
   const pendingWebUIStyleRef = useRef<0 | 1 | null>(null)
 
   const resolvedTheme = useMemo<'dark' | 'light'>(() => {
+    void systemThemeTick
     if (themeMode !== 'system') return themeMode
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   }, [themeMode, systemThemeTick])
-
-  useEffect(() => {
-    migrateOldKeys()
-  }, [])
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
@@ -80,8 +76,26 @@ export function ThemeProvider({
     }
 
     root.dataset.dashboardStyle = dashboardStyle
-    root.dataset.retroPaperTexture = futureRetroConfig.paperTexture ? 'true' : 'false'
-    root.dataset.retroStrongBorders = futureRetroConfig.strongBorders ? 'true' : 'false'
+    root.dataset.retroTextureStyle = futureRetroConfig.textureStyle
+    root.style.setProperty('--retro-paper-warmth', `${futureRetroConfig.paperWarmth}%`)
+    root.style.setProperty('--retro-panel-depth', String(futureRetroConfig.panelDepth / 100))
+    root.style.setProperty('--retro-stroke-scale', String(futureRetroConfig.strokeScale / 100))
+    root.style.setProperty(
+      '--retro-configured-paper-texture',
+      buildFutureRetroTexture(
+        futureRetroConfig.textureStyle,
+        futureRetroConfig.textureIntensity,
+        isDark
+      )
+    )
+    const textureSize = {
+      fine: '180px 180px',
+      coarse: '260px 260px',
+      'dot-grid': '24px 24px',
+      ruled: '40px 28px',
+      none: 'auto',
+    }[futureRetroConfig.textureStyle]
+    root.style.setProperty('--retro-paper-texture-size', textureSize)
 
     applyThemePipeline(themeConfig, isDark)
   }, [resolvedTheme, themeConfig])
@@ -106,11 +120,7 @@ export function ThemeProvider({
 
     try {
       const result = await getBotConfig()
-      if (!result.success) {
-        return
-      }
-
-      const webuiConfig = result.data.webui as Record<string, unknown> | undefined
+      const webuiConfig = result.webui as Record<string, unknown> | undefined
       if (!webuiConfig || !('webui_style' in webuiConfig)) {
         return
       }
@@ -130,10 +140,7 @@ export function ThemeProvider({
     pendingWebUIStyleRef.current = webuiStyle
 
     try {
-      const result = await updateBotConfigSection('webui', { webui_style: webuiStyle })
-      if (!result.success) {
-        console.warn('保存 WebUI 风格配置失败:', result.error)
-      }
+      await updateBotConfigSection('webui', { webui_style: webuiStyle })
     } catch (error) {
       console.warn('保存 WebUI 风格配置失败:', error)
     } finally {

@@ -1,4 +1,10 @@
-import { fetchWithAuth } from './fetch-with-auth'
+/**
+ * 规划器 / 回复器监控 API
+ *
+ * 请求样板（认证、解析、错误格式化）由 @/lib/http 的请求客户端承担；
+ * 本文件只声明 endpoint 与响应类型。请求失败时抛出 ApiError（throw 契约）。
+ */
+import { backendApi } from '@/lib/http'
 
 // ========== 新的优化接口 ==========
 
@@ -20,10 +26,27 @@ export interface PlanLogSummary {
   timestamp: number
   filename: string
   action_count: number
-  action_types: string[]  // 动作类型列表
+  action_types: string[] // 动作类型列表
   total_plan_ms: number
   llm_duration_ms: number
   reasoning_preview: string
+}
+
+/**
+ * 规划动作字段值：后端 JSON 中可能是字符串，也可能是任意结构化数据
+ * （消费方按 typeof 判断后再 JSON.stringify），因此不能标成 string。
+ * 不用 unknown 是因为消费方在 JSX 中以 `{value && (...)}` 做条件渲染，
+ * unknown 会让整个表达式退化为 unknown 而无法赋给 ReactNode。
+ */
+export type PlanActionValue = string | number | boolean | object | null
+
+/** 规划日志中的单个执行动作（字段从消费方 planner-monitor 的实际用法核对而来） */
+export interface PlanAction {
+  action_type: string
+  reasoning?: PlanActionValue
+  action_message?: PlanActionValue
+  action_reasoning?: PlanActionValue
+  action_data?: Record<string, unknown>
 }
 
 export interface PlanLogDetail {
@@ -33,14 +56,14 @@ export interface PlanLogDetail {
   prompt: string
   reasoning: string
   raw_output: string
-  actions: any[]
+  actions: PlanAction[]
   timing: {
     prompt_build_ms: number
     llm_duration_ms: number
     total_plan_ms: number
     loop_start_time: number
   }
-  extra: any
+  extra: unknown
 }
 
 export interface PaginatedChatLogs {
@@ -55,31 +78,37 @@ export interface PaginatedChatLogs {
  * 获取规划器总览 - 轻量级，只统计文件数量
  */
 export async function getPlannerOverview(): Promise<PlannerOverview> {
-  const response = await fetchWithAuth('/api/planner/overview')
-  return response.json()
+  return backendApi.get<PlannerOverview>('/api/planner/overview', {
+    errorMessage: '获取规划器总览失败',
+  })
 }
 
 /**
  * 获取指定聊天的规划日志列表（分页）
  */
-export async function getChatLogs(chatId: string, page = 1, pageSize = 20, search?: string): Promise<PaginatedChatLogs> {
-  const params = new URLSearchParams({
-    page: page.toString(),
-    page_size: pageSize.toString()
+export async function getChatLogs(
+  chatId: string,
+  page = 1,
+  pageSize = 20,
+  search?: string
+): Promise<PaginatedChatLogs> {
+  return backendApi.get<PaginatedChatLogs>(`/api/planner/chat/${chatId}/logs`, {
+    query: {
+      page,
+      page_size: pageSize,
+      search: search || undefined,
+    },
+    errorMessage: '获取规划日志列表失败',
   })
-  if (search) {
-    params.append('search', search)
-  }
-  const response = await fetchWithAuth(`/api/planner/chat/${chatId}/logs?${params}`)
-  return response.json()
 }
 
 /**
  * 获取规划日志详情 - 按需加载
  */
 export async function getLogDetail(chatId: string, filename: string): Promise<PlanLogDetail> {
-  const response = await fetchWithAuth(`/api/planner/log/${chatId}/${filename}`)
-  return response.json()
+  return backendApi.get<PlanLogDetail>(`/api/planner/log/${chatId}/${filename}`, {
+    errorMessage: '获取规划日志详情失败',
+  })
 }
 
 // ========== 兼容旧接口 ==========
@@ -100,18 +129,22 @@ export interface PaginatedPlanLogs {
 }
 
 export async function getPlannerStats(): Promise<PlannerStats> {
-  const response = await fetchWithAuth('/api/planner/stats')
-  return response.json()
+  return backendApi.get<PlannerStats>('/api/planner/stats', {
+    errorMessage: '获取规划器统计失败',
+  })
 }
 
 export async function getAllLogs(page = 1, pageSize = 20): Promise<PaginatedPlanLogs> {
-  const response = await fetchWithAuth(`/api/planner/all-logs?page=${page}&page_size=${pageSize}`)
-  return response.json()
+  return backendApi.get<PaginatedPlanLogs>('/api/planner/all-logs', {
+    query: { page, page_size: pageSize },
+    errorMessage: '获取规划日志失败',
+  })
 }
 
 export async function getChatList(): Promise<string[]> {
-  const response = await fetchWithAuth('/api/planner/chats')
-  return response.json()
+  return backendApi.get<string[]>('/api/planner/chats', {
+    errorMessage: '获取聊天列表失败',
+  })
 }
 
 // ========== 回复器接口 ==========
@@ -173,29 +206,35 @@ export interface PaginatedReplyLogs {
  * 获取回复器总览 - 轻量级，只统计文件数量
  */
 export async function getReplierOverview(): Promise<ReplierOverview> {
-  const response = await fetchWithAuth('/api/replier/overview')
-  return response.json()
+  return backendApi.get<ReplierOverview>('/api/replier/overview', {
+    errorMessage: '获取回复器总览失败',
+  })
 }
 
 /**
  * 获取指定聊天的回复日志列表（分页）
  */
-export async function getReplyChatLogs(chatId: string, page = 1, pageSize = 20, search?: string): Promise<PaginatedReplyLogs> {
-  const params = new URLSearchParams({
-    page: page.toString(),
-    page_size: pageSize.toString()
+export async function getReplyChatLogs(
+  chatId: string,
+  page = 1,
+  pageSize = 20,
+  search?: string
+): Promise<PaginatedReplyLogs> {
+  return backendApi.get<PaginatedReplyLogs>(`/api/replier/chat/${chatId}/logs`, {
+    query: {
+      page,
+      page_size: pageSize,
+      search: search || undefined,
+    },
+    errorMessage: '获取回复日志列表失败',
   })
-  if (search) {
-    params.append('search', search)
-  }
-  const response = await fetchWithAuth(`/api/replier/chat/${chatId}/logs?${params}`)
-  return response.json()
 }
 
 /**
  * 获取回复日志详情 - 按需加载
  */
 export async function getReplyLogDetail(chatId: string, filename: string): Promise<ReplyLogDetail> {
-  const response = await fetchWithAuth(`/api/replier/log/${chatId}/${filename}`)
-  return response.json()
+  return backendApi.get<ReplyLogDetail>(`/api/replier/log/${chatId}/${filename}`, {
+    errorMessage: '获取回复日志详情失败',
+  })
 }

@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Coroutine, List, TypeVar
+from typing import Any, Coroutine, List, Literal, TypeVar, overload
 
 import asyncio
 
-from src.common.data_models.embedding_service_data_models import EmbeddingResult
+from src.common.data_models.embedding_service_data_models import EmbeddingResult, ImageEmbeddingResult
 from src.common.logger import get_logger
 from src.llm_models.utils_model import LLMOrchestrator
 from src.services.service_task_resolver import resolve_task_name
@@ -23,18 +23,29 @@ _CoroutineReturnT = TypeVar("_CoroutineReturnT")
 class EmbeddingServiceClient:
     """面向上层模块的 Embedding 服务对象式门面。"""
 
-    def __init__(self, task_name: str = "embedding", request_type: str = "") -> None:
+    def __init__(self, task_name: str = "embedding", request_type: str = "", session_id: str = "") -> None:
         """初始化 Embedding 服务门面。
 
         Args:
             task_name: 任务配置名称，对应 `model_task_config` 下的字段名。
             request_type: 当前请求的业务类型标识。
+            session_id: 当前请求归属的真实聊天流 ID；非聊天上下文为空。
         """
         self.task_name = resolve_task_name(task_name)
         self.request_type = request_type
-        self._orchestrator = LLMOrchestrator(task_name=self.task_name, request_type=request_type)
+        self.session_id = str(session_id or "").strip()
+        self._orchestrator = LLMOrchestrator(
+            task_name=self.task_name,
+            request_type=request_type,
+            session_id=self.session_id,
+        )
 
-    async def embed_text(self, embedding_input: str) -> EmbeddingResult:
+    def _resolve_effective_session_id(self, session_id: str = "") -> str:
+        """解析本次请求用于统计归属的聊天流 ID。"""
+
+        return str(session_id or self.session_id or "").strip()
+
+    async def embed_text(self, embedding_input: str, *, session_id: str = "") -> EmbeddingResult:
         """生成单条文本的嵌入向量。
 
         Args:
@@ -43,34 +54,99 @@ class EmbeddingServiceClient:
         Returns:
             EmbeddingResult: 统一嵌入结果对象。
         """
-        raw_result = await self._orchestrator.get_embedding(embedding_input)
+        raw_result = await self._orchestrator.get_embedding(
+            embedding_input,
+            session_id=self._resolve_effective_session_id(session_id),
+        )
         return EmbeddingResult(
             embedding=list(raw_result.embedding),
             model_name=raw_result.model_name,
+            model_identifier=raw_result.model_identifier,
+            api_provider=raw_result.api_provider,
         )
+
+    async def embed_image(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str,
+        preprocess_version: str,
+        session_id: str = "",
+    ) -> ImageEmbeddingResult:
+        """生成单张图片的嵌入向量。"""
+
+        if not image_bytes:
+            raise ValueError("图片嵌入输入不能为空")
+        if not mime_type.startswith("image/"):
+            raise ValueError("图片嵌入输入必须提供 image/* MIME 类型")
+        raw_result = await self._orchestrator.get_image_embedding(
+            bytes(image_bytes),
+            mime_type=mime_type,
+            preprocess_version=preprocess_version,
+            session_id=self._resolve_effective_session_id(session_id),
+        )
+        return ImageEmbeddingResult(
+            embedding=list(raw_result.embedding),
+            model_name=raw_result.model_name,
+            model_identifier=raw_result.model_identifier,
+            api_provider=raw_result.api_provider,
+            mime_type=mime_type,
+            preprocess_version=preprocess_version,
+            request_protocol_hash=raw_result.request_protocol_hash,
+        )
+
+    @overload
+    async def embed_texts(
+        self,
+        embedding_inputs: List[str],
+        max_concurrent: int | None = None,
+        *,
+        session_id: str = "",
+        return_exceptions: Literal[False] = False,
+    ) -> List[EmbeddingResult]: ...
+
+    @overload
+    async def embed_texts(
+        self,
+        embedding_inputs: List[str],
+        max_concurrent: int | None = None,
+        *,
+        session_id: str = "",
+        return_exceptions: Literal[True],
+    ) -> List[EmbeddingResult | BaseException]: ...
 
     async def embed_texts(
         self,
         embedding_inputs: List[str],
         max_concurrent: int | None = None,
-    ) -> List[EmbeddingResult]:
+        *,
+        session_id: str = "",
+        return_exceptions: bool = False,
+    ) -> List[EmbeddingResult | BaseException]:
         """批量生成文本嵌入向量。
 
         Args:
             embedding_inputs: 待编码的文本列表。
             max_concurrent: 最大并发数；未提供时按串行执行。
+            return_exceptions: 是否按输入位置返回单条异常，供允许局部失败的上层使用。
 
         Returns:
-            List[EmbeddingResult]: 与输入顺序一致的嵌入结果列表。
+            List[EmbeddingResult | BaseException]: 与输入顺序一致的嵌入结果；
+                仅当 ``return_exceptions=True`` 时包含异常。
         """
         if not embedding_inputs:
             return []
 
         safe_max_concurrent = max(1, int(max_concurrent or 1))
         if safe_max_concurrent == 1:
-            results: List[EmbeddingResult] = []
+            results: List[EmbeddingResult | BaseException] = []
             for embedding_input in embedding_inputs:
-                results.append(await self.embed_text(embedding_input))
+                try:
+                    results.append(await self.embed_text(embedding_input, session_id=session_id))
+                except Exception as exc:
+                    if not return_exceptions:
+                        raise
+                    results.append(exc)
             return results
 
         semaphore = asyncio.Semaphore(safe_max_concurrent)
@@ -86,16 +162,32 @@ class EmbeddingServiceClient:
                 tuple[int, EmbeddingResult]: 输入索引与对应嵌入结果。
             """
             async with semaphore:
-                result = await self.embed_text(embedding_input)
+                result = await self.embed_text(embedding_input, session_id=session_id)
                 return index, result
 
-        ordered_results = await asyncio.gather(
-            *[_embed_one(index, embedding_input) for index, embedding_input in enumerate(embedding_inputs)]
+        gathered_results = await asyncio.gather(
+            *[_embed_one(index, embedding_input) for index, embedding_input in enumerate(embedding_inputs)],
+            return_exceptions=return_exceptions,
         )
+        if return_exceptions:
+            results: List[EmbeddingResult | BaseException] = []
+            for expected_index, gathered_result in enumerate(gathered_results):
+                if isinstance(gathered_result, BaseException):
+                    results.append(gathered_result)
+                    continue
+                result_index, result = gathered_result
+                if result_index != expected_index:
+                    raise RuntimeError(
+                        f"Embedding 批量结果顺序异常: expected={expected_index}, actual={result_index}"
+                    )
+                results.append(result)
+            return results
+
+        ordered_results = list(gathered_results)
         ordered_results.sort(key=lambda item: item[0])
         return [result for _, result in ordered_results]
 
-    def embed_text_sync(self, embedding_input: str) -> EmbeddingResult:
+    def embed_text_sync(self, embedding_input: str, *, session_id: str = "") -> EmbeddingResult:
         """以同步方式生成单条文本的嵌入向量。
 
         Args:
@@ -104,12 +196,14 @@ class EmbeddingServiceClient:
         Returns:
             EmbeddingResult: 统一嵌入结果对象。
         """
-        return self._run_coroutine_sync(self.embed_text(embedding_input))
+        return self._run_coroutine_sync(self.embed_text(embedding_input, session_id=session_id))
 
     def embed_texts_sync(
         self,
         embedding_inputs: List[str],
         max_concurrent: int | None = None,
+        *,
+        session_id: str = "",
     ) -> List[EmbeddingResult]:
         """以同步方式批量生成文本嵌入向量。
 
@@ -124,6 +218,7 @@ class EmbeddingServiceClient:
             self.embed_texts(
                 embedding_inputs,
                 max_concurrent=max_concurrent,
+                session_id=session_id,
             )
         )
 

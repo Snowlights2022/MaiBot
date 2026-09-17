@@ -1,82 +1,127 @@
+[behavior_scene_analyze]
+display_name = "行動シーン分析"
+advanced = true
+description = "直近のチャット文脈を再利用可能な行動シーン断片に分割し、領域タグ、行動ニーズ、相互作用の特徴を抽出するテンプレート。"
+
+[consolidate_behavior]
+display_name = "行動表現の統合"
+advanced = true
+description = "行動表現ライブラリ内の意味的に重複する項目を見つけ、保持対象と統合対象のプランを出力するテンプレート。"
+
 [maisaka_chat]
 display_name = "Planner"
 advanced = false
-description = "Maisaka 主规划模板，负责整合身份、时间、工具说明和聊天上下文，驱动主循环进行思考、决策与工具调用。"
+description = "Maisaka のメイン計画テンプレート。身份、時刻、ツール説明、チャット文脈を統合し、思考・判断・ツール呼び出しを進める。"
 
 [maisaka_chat_merged_timing]
 display_name = "Planner（タイミング統合）"
 advanced = false
-description = "独立时间感知关闭时使用的 Maisaka 主规划模板，将节奏控制判断合并到 Planner。"
+description = "独立したタイミング判断を使わない場合の Maisaka メイン計画テンプレート。発話タイミングの判断を Planner に統合する。"
 
 [maisaka_replyer]
 display_name = "Replyer"
 advanced = false
-description = "Maisaka 回复生成模板，负责根据人格、表达风格、群聊注意事项和待回复上下文生成最终回复。"
+description = "Maisaka の返信生成テンプレート。人格、表現スタイル、グループチャット上の注意点、返信対象の文脈から最終返信を生成する。"
 
 [default_expressor]
-display_name = "默认表达器"
+display_name = "既定表現器"
 advanced = true
-description = "表达方式生成与整理相关模板，通常只在调试表达系统时需要修改。"
+description = "表現方式の生成と整理に関するテンプレート。通常は表現システムのデバッグ時だけ編集する。"
 
 [emoji_content_analysis]
-display_name = "表情包内容分析"
+display_name = "絵文字内容分析"
 advanced = true
-description = "用于分析表情包图片内容的模板。"
+description = "絵文字やスタンプ画像の内容を分析するためのテンプレート。"
 
 [emoji_content_filtration]
-display_name = "表情包内容过滤"
+display_name = "絵文字内容フィルタ"
 advanced = true
-description = "用于判断表情包内容是否符合过滤要求的模板。"
+description = "絵文字やスタンプの内容がフィルタ条件を満たすか判断するためのテンプレート。"
 
 [emoji_replace]
-display_name = "表情包替换"
+display_name = "絵文字置換"
 advanced = true
-description = "用于根据文本语境选择或替换表情包的模板。"
+description = "テキスト文脈に応じて絵文字やスタンプを選択・置換するためのテンプレート。"
+
+[emoji_selection]
+display_name = "絵文字選択"
+advanced = true
+description = "文脈と現在の語調に合わせて、絵文字やスタンプのグリッドから最適なものを選ぶためのテンプレート。"
+
+[evaluate_behavior_feedback]
+display_name = "行動フィードバック評価"
+advanced = true
+description = "選択された行動が実際に採用されたか、採用後にどのような会話結果が生じたかを評価するテンプレート。"
 
 [expression_evaluation]
-display_name = "表达评价"
+display_name = "表現評価"
 advanced = true
-description = "用于评价候选表达方式质量的模板。"
+description = "候補表現の品質を評価するためのテンプレート。"
 
 [expression_select]
-display_name = "表达选择"
+display_name = "表現選択"
 advanced = true
-description = "用于从表达库中选择合适表达方式的模板。"
+description = "表現ライブラリから適切な表現方式を選択するためのテンプレート。"
 
 [image_description]
-display_name = "图片描述"
+display_name = "画像説明"
+advanced = false
+description = "画像内容をテキスト説明へ変換するためのテンプレート。"
+
+[heuristic_memory_impression]
+display_name = "記憶検索印象"
 advanced = true
-description = "用于将图片内容转换为文本描述的模板。"
+description = "現在のチャット流と直近メッセージから自然言語の印象を生成し、長期記憶の意味検索を補助するテンプレート。"
 
 [jargon_compare_inference]
-display_name = "术语对比推理"
+display_name = "隠語比較推論"
 advanced = true
-description = "用于比较和推理群内术语含义的模板。"
+description = "グループ内の隠語の意味を比較・推論するためのテンプレート。"
 
 [jargon_explainer_summarize]
-display_name = "术语解释总结"
+display_name = "隠語説明要約"
 advanced = true
-description = "用于总结术语解释结果的模板。"
+description = "隠語説明の結果を要約するためのテンプレート。"
 
 [jargon_inference_content_only]
-display_name = "术语推理"
+display_name = "隠語推論"
 advanced = true
-description = "用于仅基于内容推理术语含义的模板。"
+description = "内容のみから隠語の意味を推論するためのテンプレート。"
 
 [jargon_inference_with_context]
-display_name = "术语上下文推理"
+display_name = "隠語文脈推論"
 advanced = true
-description = "用于结合上下文推理术语含义的模板。"
+description = "周辺文脈を組み合わせて隠語の意味を推論するためのテンプレート。"
 
 [learn_style]
-display_name = "表达风格学习"
+display_name = "表現スタイル学習"
 advanced = true
-description = "用于从聊天内容中学习表达风格的模板。"
+description = "チャット内容から表現スタイルを学習するためのテンプレート。"
+
+[learn_jargon]
+display_name = "隠語学習"
+advanced = true
+description = "実際のチャットからグループ固有の隠語候補を抽出し、意味と共起分布を更新するためのテンプレート。"
+
+[learn_behavior]
+display_name = "行動表現学習"
+advanced = true
+description = "実際のチャットから再利用可能なシーン・行動・結果のパターンを抽出し、観察学習と自己フィードバックを扱うテンプレート。"
+
+[maisaka_chat_focus]
+display_name = "Focus Planner"
+advanced = true
+description = "Focus モード用の Maisaka 計画テンプレート。現在注目しているチャットとチャット横断概要をもとに次の行動を選択する。"
 
 [maisaka_timing_gate]
 display_name = "Timing Gate"
 advanced = false
-description = "Maisaka 节奏控制模板，负责在每轮主循环前判断当前应该等待、停止，还是继续进入思考与回复流程。"
+description = "Maisaka のタイミング制御テンプレート。各メインループの前に待機、停止、思考と返信への継続を判断する。"
+
+[memory_fuzzy_modify_plan]
+display_name = "長期記憶の曖昧修正計画"
+advanced = true
+description = "自然言語の修正要求と候補記憶から、失効させる旧記憶と書き込む新記憶を計画するテンプレート。"
 
 [mid_term_memory_summary]
 display_name = "中期チャット要約"
@@ -84,6 +129,11 @@ advanced = true
 description = "コンテキスト裁切時に、削除されるチャット履歴を long_summary、brief、keywords に要約するためのテンプレート。"
 
 [memory_retrieval_react_prompt_head_memory]
-display_name = "记忆检索 ReAct 头部"
+display_name = "記憶検索 ReAct ヘッダー"
 advanced = true
-description = "ReAct 式记忆查询流程使用的高级记忆检索提示词头部。"
+description = "ReAct 形式の記憶検索フローで使用する高度な記憶検索プロンプトのヘッダー。"
+
+[webui_ai_search]
+display_name = "WebUI AI 検索"
+advanced = true
+description = "自然言語の意図に基づき、WebUI が提供する実在のページと設定候補から関連結果を選択します。"

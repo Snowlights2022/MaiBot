@@ -1,18 +1,18 @@
-﻿from datetime import datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
-
-from rich.traceback import install
-from sqlmodel import select
+from typing import Dict, Optional, Set
 
 import asyncio
 import base64
 import hashlib
 
-from src.common.logger import get_logger
+from rich.traceback import install
+from sqlmodel import select
+
+from src.common.data_models.image_data_model import MaiImage
 from src.common.database.database import get_db_session
 from src.common.database.database_model import Images, ImageType
-from src.common.data_models.image_data_model import MaiImage
+from src.common.logger import get_logger
 from src.common.utils.image_path import resolve_stored_image_path, serialize_stored_image_path
 from src.config.config import config_manager
 from src.prompt.prompt_manager import prompt_manager
@@ -53,9 +53,20 @@ class ImageManager:
         """初始化图片管理器。"""
         _ensure_image_dir_exists()
         self._pending_description_tasks: Dict[str, asyncio.Task[None]] = {}
+        self._description_sync_tasks: Set[asyncio.Task[None]] = set()
         self.cleanup_legacy_image_registration_records()
 
         logger.info("图片管理器初始化完成")
+
+    async def shutdown(self) -> None:
+        """等待描述构建及其派生的记忆同步任务完成。"""
+        builds = list(self._pending_description_tasks.values())
+        if builds:
+            await asyncio.gather(*builds, return_exceptions=True)
+        # 构建完成回调会创建同步任务；先让这些回调完成注册。
+        await asyncio.sleep(0)
+        if self._description_sync_tasks:
+            await asyncio.gather(*list(self._description_sync_tasks))
 
     def _get_image_record(self, image_hash: str) -> Optional[Images]:
         """根据哈希获取图片记录。"""
@@ -66,6 +77,14 @@ class ImageManager:
                 # 返回会话外使用的只读记录，避免在会话关闭后触发属性刷新。
                 session.expunge(record)
             return record
+
+    def get_cached_image_description(self, image_hash: str) -> str:
+        """读取已完成的 VLM 描述，不触发新的模型调用。"""
+
+        record = self._get_image_record(str(image_hash or "").strip())
+        if record is None or not record.vlm_processed:
+            return ""
+        return str(record.description or "").strip()
 
     def _normalize_image_registration_fields(self, record: Images) -> bool:
         """Normalize accidental emoji registration fields on image records."""
@@ -159,7 +178,9 @@ class ImageManager:
         if image_hash in self._pending_description_tasks:
             return
 
-        task = asyncio.create_task(self._build_description_in_background(image_hash, image_bytes, saved_image=saved_image))
+        task = asyncio.create_task(
+            self._build_description_in_background(image_hash, image_bytes, saved_image=saved_image)
+        )
         self._pending_description_tasks[image_hash] = task
         task.add_done_callback(lambda finished_task: self._finalize_description_build(image_hash, finished_task))
 
@@ -178,9 +199,9 @@ class ImageManager:
             saved_image: 已保存的图片对象，避免重复查询和更新访问计数。
         """
         try:
-            logger.info(f"图片描述后台构建已开始，哈希值: {image_hash}")
+            logger.debug(f"图片描述后台构建已开始，哈希值: {image_hash}")
             await self.build_image_description(image_bytes, saved_image=saved_image)
-            logger.info(f"图片描述后台构建完成，哈希值: {image_hash}")
+            logger.debug(f"图片描述后台构建完成，哈希值: {image_hash}")
         except Exception as exc:
             logger.warning(f"图片描述后台构建失败，哈希值: {image_hash}，错误: {exc}")
 
@@ -197,6 +218,30 @@ class ImageManager:
         except Exception as exc:
             logger.debug(f"图片描述后台任务结束时捕获异常，哈希值: {image_hash}，错误: {exc}")
             return
+
+
+        async def sync_description_to_memory() -> None:
+            try:
+                record = self._get_image_record(image_hash)
+                if record is None or not record.description:
+                    return
+                from src.services.memory_service import memory_service
+
+                result = await memory_service.image_memory(
+                    action="describe",
+                    content_hash=image_hash,
+                    text=f"[图片：{record.description}]",
+                )
+                if not result.get("success"):
+                    raise RuntimeError(str(result.get("error") or "图片描述同步失败"))
+            except Exception as exc:
+                logger.warning(f"同步图片描述到记忆失败，哈希值: {image_hash}，错误: {exc}")
+
+        sync_task = asyncio.create_task(
+            sync_description_to_memory(), name=f"A_Memorix.image_description.{image_hash[:12]}"
+        )
+        self._description_sync_tasks.add(sync_task)
+        sync_task.add_done_callback(self._description_sync_tasks.discard)
 
         try:
             from src.maisaka.visual.chat_history_refresher import log_tracked_image_recognition_completed
@@ -245,7 +290,7 @@ class ImageManager:
                 session.add(record)
                 session.flush()  # 确保记录被写入数据库以获取ID
                 record_id = record.id
-                logger.info(f"成功保存图片记录到数据库: ID: {record_id}，路径: {record.full_path}")
+                logger.debug(f"保存图片: ID: {record_id}，路径: {record.full_path}")
         except Exception as e:
             logger.error(f"保存图片记录到数据库时发生错误: {e}")
             return False
@@ -272,7 +317,7 @@ class ImageManager:
                 record.last_used_time = datetime.now()
                 record.vlm_processed = image.vlm_processed
                 session.add(record)
-                logger.info(f"成功更新图片描述: {image.file_hash}，新描述: {image.description}")
+                logger.info(f"理解图片: {image.description}")
         except Exception as e:
             logger.error(f"更新图片描述时发生错误: {e}")
             return False
@@ -331,7 +376,7 @@ class ImageManager:
             logger.error(f"查询图片记录时发生错误: {e}")
             raise e
 
-        logger.info(f"图片不存在或文件缺失，准备保存图片文件，哈希值: {hash_str}")
+        logger.debug(f"图片不存在或文件缺失，准备保存图片文件，哈希值: {hash_str}")
         tmp_file_path = IMAGE_DIR / f"{hash_str}.tmp"
         with tmp_file_path.open("wb") as f:
             f.write(image_bytes)
@@ -362,7 +407,7 @@ class ImageManager:
                 record.last_used_time = datetime.now()
                 session.add(record)
                 session.flush()
-                logger.info(f"成功保存图片记录到数据库: ID: {record.id}，路径: {record.full_path}")
+                logger.info(f"保存图片: ID: {record.id}，路径: {record.full_path}")
         except Exception as e:
             logger.error(f"保存图片记录到数据库时发生错误: {e}")
             return False

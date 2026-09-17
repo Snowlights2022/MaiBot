@@ -2,6 +2,10 @@
   "header": {
     "collapseSidebar": "사이드바 접기",
     "expandSidebar": "사이드바 펼치기",
+    "switchSidebarToFixed": "고정 모드로 전환",
+    "switchSidebarToHover": "호버 모드로 전환",
+    "collapseTopbar": "상단 바 접기",
+    "expandTopbar": "상단 바 펼치기",
     "toggleConnection": "백엔드 연결 전환",
     "viewAnnualSummary": "연간 요약 보기",
     "annualSummary": "2025 연간 요약",
@@ -21,17 +25,18 @@
       "overview": "개요",
       "botConfig": "봇 설정",
       "botResources": "봇 리소스",
-      "extensionsMonitor": "플러그인 및 확장",
+      "extensionsMonitor": "확장 및 연동",
+      "advancedTools": "고급 도구",
       "system": "시스템"
     },
     "menu": {
       "home": "홈",
+      "focusCompanion": "집중 동반",
       "botMainConfig": "봇 메인 설정",
       "aiModelProvider": "AI 모델 공급자",
       "modelManagement": "모델 관리",
       "promptManagement": "Prompt 관리",
       "promptGenerator": "페르소나 생성기 (테스트 기능)",
-      "adapterConfig": "어댑터 설정",
       "emojiManagement": "이모티콘 관리",
       "expressionManagement": "표현 관리",
       "slangManagement": "슬랭 관리",
@@ -42,12 +47,117 @@
       "pluginMarket": "플러그인 마켓",
       "configTemplate": "설정 템플릿",
       "pluginConfig": "플러그인 관리",
+      "adapterManagement": "어댑터 관리",
       "mcpSettings": "MCP 설정",
+      "dataTransfer": "데이터 관리",
+      "statistics": "상세 통계 데이터",
+      "replyEffects": "답변 효과",
       "logViewer": "로그 뷰어",
       "reasoningProcess": "추론 과정",
       "maisakaMonitor": "MaiSaka 채팅 모니터",
+      "chatManagement": "채팅 관리",
       "localChat": "로컬 채팅",
-      "settings": "설정"
+      "settings": "WebUI 설정"
+    }
+  },
+  "statisticsPage": {
+    "title": "상세 통계 데이터",
+    "description": "MaiBot 실행 중의 모델 호출, Token, 비용, 메시지 및 온라인 시간을 확인합니다.",
+    "generatedAt": "통계 기준 시각: {{time}}",
+    "periodRange": "통계 기간: {{start}}부터 {{end}}까지",
+    "empty": "이 기간에는 데이터가 없습니다",
+    "actions": { "refresh": "새로고침", "openHtml": "HTML 버전 열기" },
+    "error": {
+      "title": "상세 통계를 불러오지 못했습니다",
+      "description": "잠시 후 다시 시도해 주세요"
+    },
+    "periods": {
+      "all_time": "배포 이후",
+      "last_30_days": "최근 30일",
+      "last_7_days": "최근 7일",
+      "last_3_days": "최근 3일",
+      "last_24_hours": "최근 1일",
+      "last_3_hours": "최근 3시간",
+      "last_hour": "최근 1시간",
+      "last_15_minutes": "최근 15분"
+    },
+    "tabs": { "trends": "데이터 차트", "metrics": "지표 추이" },
+    "sections": { "breakdowns": "분류 통계", "distributions": "데이터 분포" },
+    "breakdowns": {
+      "models": "모델별",
+      "modules": "모듈별",
+      "requestTypes": "요청 유형별",
+      "chats": "채팅 메시지"
+    },
+    "summary": {
+      "onlineTime": "총 온라인 시간",
+      "messages": "총 메시지 수",
+      "replies": "총 답변 수",
+      "requests": "총 요청 수",
+      "tokens": "총 Token 수",
+      "inputTokens": "입력 Token",
+      "outputTokens": "출력 Token",
+      "cacheHitRate": "Prompt 캐시 적중률",
+      "cacheHitTokens": "캐시 적중 Token",
+      "cacheMissTokens": "캐시 미적중 Token",
+      "totalCost": "총 비용",
+      "costPerMessages": "비용/메시지",
+      "costPerReceivedMessages": "비용/수신 메시지",
+      "costPerReplies": "비용/답변",
+      "costPerHour": "비용/시간",
+      "tokensPerHour": "Token/시간"
+    },
+    "units": { "per100": "100개당", "perHour": "시간당" },
+    "table": {
+      "name": "이름",
+      "requests": "호출 횟수",
+      "inputTokens": "입력 Token",
+      "outputTokens": "출력 Token",
+      "totalTokens": "총 Token",
+      "cacheHitTokens": "캐시 적중 Token",
+      "cacheMissTokens": "캐시 미적중 Token",
+      "cacheHitRate": "캐시 적중률",
+      "cost": "누적 비용",
+      "avgTime": "평균 시간",
+      "stdTime": "시간 표준편차",
+      "callsPerReply": "답변당 호출 수",
+      "tokensPerReply": "답변당 Token",
+      "tokensPerCall": "호출당 Token",
+      "chat": "연락처/그룹",
+      "messages": "메시지 수"
+    },
+    "distributions": {
+      "ownerCosts": "호출 소스 비용 분포",
+      "modelCosts": "모델 비용 분포",
+      "moduleCosts": "모듈 비용 분포",
+      "requestTypeCosts": "요청 유형 비용 분포",
+      "chatMessages": "채팅 메시지 분포",
+      "chatCosts": "채팅 스트림 비용 분포"
+    },
+    "charts": {
+      "timeRange": "시간 범위",
+      "timeScale": "시간 척도",
+      "toggleSeries": "{{name}} 표시 전환"
+    },
+    "ranges": {
+      "6h": "6시간",
+      "12h": "12시간",
+      "24h": "24시간",
+      "48h": "48시간",
+      "7d": "7일",
+      "30d": "30일"
+    },
+    "trends": {
+      "totalCost": "총 비용 추이",
+      "moduleCosts": "모듈별 비용 추이",
+      "modelCosts": "모델별 비용 추이",
+      "chatMessages": "채팅별 메시지 추이"
+    },
+    "metrics": {
+      "costPerMessages": "메시지당 비용 추이",
+      "costPerHour": "시간당 비용 추이",
+      "tokensPerHour": "시간당 Token 추이",
+      "costPerReplies": "답변당 비용 추이"
     }
   },
   "workspace": {
@@ -57,10 +167,9 @@
     "logs": "麦麦 로그"
   },
   "chat": {
-    "defaultTab": "WebUI",
     "botNameFallback": "麦麦",
     "userFallback": "사용자",
-    "userNameFallback": "WebUI 사용자",
+    "userNameFallback": "인간",
     "virtualGroupFallback": "WebUI 가상 그룹 채팅",
     "status": {
       "connected": "연결됨",
@@ -69,6 +178,7 @@
     },
     "actions": {
       "cancel": "취소",
+      "openEmojiManager": "사용자 스티커",
       "reconnect": "다시 연결",
       "save": "저장",
       "send": "메시지 보내기"
@@ -90,24 +200,48 @@
       "errorFallback": "오류가 발생했습니다",
       "thinking": "생각 중..."
     },
+    "activity": {
+      "acting": "{{bot}} 행동 중{{retry}}",
+      "error": "{{bot}} 오류 발생{{retry}}",
+      "retrySuffix": " {{attempt}}/{{max}}",
+      "thinking": "{{bot}} 생각 중{{retry}}",
+      "typing": "{{bot}} 입력 중{{retry}}"
+    },
     "composer": {
       "hint": "Enter 전송 · Shift + Enter 줄바꿈"
+    },
+    "emojiManager": {
+      "add": "추가",
+      "delete": "스티커 삭제",
+      "empty": "사용자 스티커가 없습니다. 추가해서 사용해 보세요.",
+      "hint": "스티커를 클릭하여 전송",
+      "send": "스티커 전송",
+      "title": "내 스티커"
     },
     "sidebar": {
       "closeConversation": "{{label}} 닫기",
       "conversations": "채팅 대화",
       "emptyPreview": "아직 메시지가 없습니다",
       "identityHint": "로컬 채팅 신분",
+      "myChats": "麦麦와 채팅",
+      "noSearchResults": "일치하는 채팅이 없습니다",
       "newVirtual": "새 가상 신분 대화",
+      "observedAvatarAlt": "{{name}}의 아바타",
+      "observedBadge": "관찰",
+      "observedChats": "麦麦의 채팅 스트림",
+      "openSettings": "{{name}}의 채팅 설정 열기",
       "online": "온라인",
+      "searchPlaceholder": "채팅 검색…",
       "offline": "오프라인",
       "subtitle": "대화 {{count}}개",
       "title": "채팅",
-      "webuiBadge": "WebUI",
       "virtualBadge": "가상",
-      "profileTitle": "내 신분",
+      "editAvatar": "아바타 변경",
       "editName": "닉네임 편집",
-      "saveName": "저장"
+      "saveName": "저장",
+      "savingAvatar": "아바타 저장 중",
+      "userAvatarAlt": "{{name}}의 아바타",
+      "waitingObservedChats": "채팅 스트림 대기 중…"
     },
     "dialog": {
       "create": "대화 만들기",
@@ -140,6 +274,17 @@
       "videoUnsupported": "브라우저가 비디오 재생을 지원하지 않습니다"
     },
     "toast": {
+      "avatarSaved": "아바타가 저장되었습니다",
+      "avatarSavedDesc": "새 아바타가 마이 채팅에 적용되었습니다.",
+      "avatarSaveFailed": "아바타를 저장하지 못했습니다",
+      "avatarSaveFailedDesc": "잠시 후 다시 시도해 주세요.",
+      "avatarUnsupported": "이 아바타를 사용할 수 없습니다",
+      "avatarUnsupportedDesc": "5MB 이하의 JPG, PNG, WebP, GIF 또는 BMP 이미지를 선택하세요.",
+      "emojiDeleteFailed": "스티커를 삭제하지 못했습니다",
+      "emojiLoadFailed": "스티커를 불러오지 못했습니다",
+      "emojiSendFailed": "스티커를 전송하지 못했습니다",
+      "emojiUnsupportedDesc": "2MB 이하의 JPG, PNG, WebP 또는 GIF 이미지를 선택하세요.",
+      "emojiUploadFailed": "스티커를 추가하지 못했습니다",
       "backendUnavailable": "백엔드 서비스에 연결할 수 없습니다. MaiBot이 실행 중인지 확인하세요.",
       "backendUnavailableShort": "백엔드 서비스에 연결할 수 없습니다",
       "connectionFailed": "연결 실패",
@@ -168,7 +313,7 @@
     "dismiss": "HTTP 보안 알림 닫기"
   },
   "settings": {
-    "title": "설정",
+    "title": "WebUI 설정",
     "description": "앱 환경 설정 관리",
     "tabs": {
       "appearance": "외관",
@@ -211,8 +356,8 @@
       "lightDesc": "항상 라이트 테마 사용",
       "darkDesc": "항상 다크 테마 사용",
       "systemDesc": "시스템 설정에 따라 자동 전환",
-      "accentPrimary": "링 컴러",
-      "accentHint": "색상 퐹을 클릭하거나 HEX 값을 입력하세요",
+      "accentPrimary": "링 컬러",
+      "accentHint": "색상 링을 클릭하거나 HEX 값을 입력하세요",
       "resetTheme": "기본값으로 재설정",
       "confirmResetTheme": "테마 재설정 확인",
       "confirmResetThemeDesc": "이렇게 하면 색상, 글꼴, 레이아웃 및 사용자 정의 CSS를 포함한 모든 테마 설정이 기본값으로 재설정됩니다. 이 작업은 되돌릴 수 없습니다. 계속하시겠습니까?",
@@ -225,9 +370,7 @@
       "importSuccessDesc": "테마 설정을 가져왔습니다. 페이지가 자동으로 새로고침됩니다",
       "resetSuccessDesc": "테마가 기본값으로 재설정되었습니다",
       "enableAnimations": "애니메이션 활성화",
-      "enableAnimationsDesc": "비활성화하면 모든 전환 애니메이션과 효과가 긺히고 성능이 향상됩니다",
-      "loginWavesBackground": "로그인 페이지 파도 배경",
-      "loginWavesBackgroundDesc": "비활성화하면 로그인 페이지가 단색 배경이 됩니다. 저사양 디바이스에 적합합니다",
+      "enableAnimationsDesc": "비활성화하면 모든 전환 애니메이션과 효과가 꺼지고 성능이 향상됩니다",
       "inheritParentBg": "상위 배경 상속",
       "inheritParentBgDesc": "활성화하면 상위 레이어의 배경 설정을 사용합니다",
       "fontFamilyLabel": "글꼴 패밀리",
@@ -239,7 +382,7 @@
       "baseFontSize": "기본 글자 크기 (Base Size)",
       "lineHeight": "줄 높이 (Line Height)",
       "lineHeightPlaceholder": "줄 높이 선택",
-      "lineHeightCompact": "콤팬트 (1.2)",
+      "lineHeightCompact": "콤팩트 (1.2)",
       "lineHeightNormal": "보통 (1.5)",
       "lineHeightLoose": "느슨 (1.75)",
       "borderRadiusLabel": "테두리 반경 (Radius)",
@@ -250,10 +393,8 @@
       "shadowMd": "중간 (Medium)",
       "shadowLg": "강함 (Large)",
       "shadowXl": "매우 강함 (Extra Large)",
-      "blurLabel": "흘림 효과 (Blur)",
-      "sidebarWidthLabel": "사이드바드 너비 (Sidebar Width)",
-      "maxContentWidth": "콘텐츠 최대 너비 (Max Width)",
-      "spacingUnit": "기본 간격 (Spacing Unit)",
+      "blurLabel": "흐림 효과 (Blur)",
+      "sidebarWidthLabel": "사이드바 너비 (Sidebar Width)",
       "animationSpeedLabel": "애니메이션 속도 (Speed)",
       "animationSpeedPlaceholder": "애니메이션 속도 선택",
       "animationFast": "빠름 (100ms)",
@@ -261,12 +402,30 @@
       "animationSlow": "느림 (500ms)",
       "animationOff": "끄기 (0ms)",
       "bgPage": "페이지",
-      "bgSidebar": "사이드바드",
+      "bgSidebar": "사이드바",
       "typographyGroup": "타이포그래피 (Typography)",
       "visualGroup": "시각 효과 (Visual)",
       "layoutGroup": "레이아웃 (Layout)",
       "animationGroup": "애니메이션 (Animation)",
-      "backgroundGroup": "배경 설정 (Backgrounds)"
+      "backgroundGroup": "배경 설정 (Backgrounds)",
+      "retroConfig": "퓨처 레트로 질감",
+      "retroConfigDesc": "종이, 텍스처와 표면 깊이를 조절하고 즉시 미리 봅니다.",
+      "retroPaperWarmth": "종이 온기",
+      "retroPaperWarmthDesc": "순백색부터 현재의 따뜻한 노란 종이까지 조절합니다.",
+      "retroPaperWhite": "순백색",
+      "retroPaperWarm": "따뜻한 노랑",
+      "retroTexture": "종이 텍스처",
+      "retroTextureDesc": "고운 입자, 굵은 입자, 도트 그리드, 줄무늬 또는 없음을 선택합니다.",
+      "retroTextureFine": "고운 입자",
+      "retroTextureCoarse": "굵은 입자",
+      "retroTextureDots": "도트 그리드",
+      "retroTextureRuled": "가로줄",
+      "retroTextureNone": "없음",
+      "retroTextureIntensity": "텍스처 강도",
+      "retroPanelDepth": "패널 깊이",
+      "retroPanelDepthDesc": "오목한 표면과 그림자의 가시성을 조절합니다.",
+      "retroStrokeScale": "외곽선 굵기",
+      "retroStrokeScaleDesc": "카드와 컨트롤의 외곽선 굵기를 조절합니다."
     },
     "security": {
       "currentToken": "현재 액세스 토큰",
@@ -334,6 +493,14 @@
       "securityTip6": "최고의 보안을 위해 시스템 생성 토큰을 권장합니다"
     },
     "other": {
+      "display": "표시 설정",
+      "guidesAndNotices": "가이드 및 알림",
+      "guidesAndNoticesDesc": "완료한 가이드와 닫은 알림을 초기화합니다. 다른 설정이나 데이터에는 영향을 주지 않습니다.",
+      "resetGuidesAndNotices": "모든 가이드 및 알림 초기화",
+      "guidesResetDone": "가이드 및 알림 초기화 완료",
+      "guidesResetDoneDesc": "저장된 상태 {{count}}개를 삭제했습니다. 해당 페이지를 다시 열면 표시됩니다.",
+      "enableAvatarFetch": "사용자 아바타 가져오기 및 표시",
+      "enableAvatarFetchDesc": "끄면 채팅과 추론 과정 화면에서 아바타 이미지를 요청하지 않고 기본 아바타를 표시합니다.",
       "performance": "성능 & 저장소",
       "localStorage": "로컬 저장소 사용량",
       "logCache": "로그 캐시 크기",
@@ -389,6 +556,8 @@
       "confirmRerunSetup": "재구성 확인",
       "confirmRerunSetupDesc": "초기 설정 마법사로 돌아갑니다. 시스템 기본 설정을 재구성할 수 있습니다. 계속하시겠습니까?",
       "devToolsDesc": "아래 기능은 개발 및 디버깅 전용입니다. 페이지 충돌이나 비정상 동작을 유발할 수 있습니다.",
+      "alwaysShowUpdateNotice": "업데이트 로그 항상 표시",
+      "alwaysShowUpdateNoticeDesc": "활성화하면 WebUI에 들어갈 때마다 업데이트 내용과 플러그인 호환성 알림이 차례로 표시됩니다. 새로고침 후 적용됩니다.",
       "triggerError": "테스트 오류 발생",
       "confirmTriggerError": "오류 발생 확인",
       "confirmTriggerErrorDesc": "React 오류를 수동으로 발생시켜 오류 경계 컴포넌트를 테스트합니다. 페이지를 새로고침하거나 홈으로 돌아가면 복구됩니다.",
@@ -440,6 +609,9 @@
         "radix": "스타일 없는 접근 가능한 컴포넌트",
         "tailwind": "유틸리티 우선 CSS 프레임워크",
         "lucide": "아름다운 아이콘 라이브러리",
+        "iconifyReact": "통합 아이콘 렌더링 컴포넌트",
+        "streamlineSharp": "Streamline이 디자인하고 Iconify를 통해 제공되는 Sharp 아이콘 세트이며, CC BY 4.0 라이선스에 따라 저작자 표시를 유지합니다",
+        "streamlineBlock": "Streamline이 디자인하고 Iconify를 통해 제공되는 Block 아이콘 세트이며, CC BY 4.0 라이선스에 따라 저작자 표시를 유지합니다",
         "tanstackRouter": "타입 안전한 라우팅 라이브러리",
         "zustand": "경량 상태 관리 라이브러리",
         "reactHookForm": "고성능 폼 라이브러리",
@@ -488,11 +660,6 @@
     "securityTipTitle": "보안 안내",
     "securityTip1": "Token을 안전하게 유지하고 타인에게 노출하지 마세요",
     "securityTip2": "Token을 재설정하려면 로그인 후 시스템 설정으로 이동하세요",
-    "slowLink": "인터페이스가 느립니다. 어떻게 하나요?",
-    "disableAnimTitle": "배경 애니메이션 비활성화",
-    "disableAnimDesc": "배경 애니메이션은 저사양 디바이스에서 느리게 동작할 수 있습니다. 비활성화하면 화면이 훨씬 부드러워집니다.",
-    "disableAnimDetail": "비활성화 후 배경은 단색으로 바뀐지지만 모든 기능은 정상 작동합니다. 시스템 설정에서 언제든지 다시 활성화할 수 있습니다.",
-    "disableAnimBtn": "애니메이션 비활성화",
     "verifyFailed": "Token 확인에 실패했습니다. 확인 후 다시 시도해 주세요.",
     "connFailed": "서버에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.",
     "switchToLight": "라이트 모드로 전환",
@@ -500,6 +667,14 @@
   },
   "setupPage": {
     "steps": {
+      "botProfile": {
+        "title": "기본 정보와 성격",
+        "description": "닉네임, 성격, 답변 스타일을 설정합니다"
+      },
+      "customToken": {
+        "title": "로그인 Token 설정",
+        "description": "이번 실행에서 생성된 랜덤 Token을 고정 사용자 지정 Token으로 바꿉니다"
+      },
       "botBasic": {
         "title": "Bot 기본 설정",
         "description": "봇의 기본 정보를 설정합니다"
@@ -537,7 +712,8 @@
       "enterBaseUrl": "API Base URL을 입력해 주세요",
       "enterApiKey": "API Key를 입력해 주세요",
       "enterPlannerModelIdentifier": "planner 모델 식별자를 입력해 주세요",
-      "enterReplyerModelIdentifier": "replyer 모델 식별자를 입력해 주세요"
+      "enterReplyerModelIdentifier": "replyer 모델 식별자를 입력해 주세요",
+      "customTokenInvalid": "Token이 요구 사항을 충족하지 않습니다: {{failedRules}}"
     },
     "toast": {
       "loadFailedTitle": "설정 불러오기에 실패했습니다",
@@ -547,9 +723,11 @@
       "saveFailedTitle": "저장에 실패했습니다",
       "validationFailedTitle": "입력값을 확인해 주세요",
       "completeSuccessTitle": "설정이 완료되었습니다",
-      "completeSuccessDescription": "새 설정을 적용하기 위해 {{appName}}을(를) 재시작하는 중입니다...",
+      "completeSuccessDescription": "{{appName}} 설정이 저장되고 적용되었습니다.",
       "completeFailedTitle": "설정 완료에 실패했습니다",
       "skipFailedTitle": "설정 마법사 건너뛰기에 실패했습니다",
+      "customTokenSuccessTitle": "Token이 업데이트되었습니다",
+      "customTokenSuccessDescription": "새 사용자 지정 Token으로 다시 로그인한 뒤 설정을 계속해 주세요.",
       "unknownError": "알 수 없는 오류"
     },
     "actions": {
@@ -557,6 +735,7 @@
       "next": "다음",
       "skip": "마법사 건너뛰기",
       "complete": "설정 완료",
+      "saveToken": "Token 저장",
       "saving": "저장 중...",
       "completing": "완료 중..."
     },
@@ -582,6 +761,16 @@
       }
     },
     "forms": {
+      "customToken": {
+        "noticeTitle": "현재 실행 시 생성된 랜덤 Token을 사용 중입니다",
+        "noticeDescription": "랜덤 Token은 다음 실행 때 변경됩니다. 고정 사용자 지정 Token을 설정하고 앞으로 WebUI 로그인에 사용하세요.",
+        "label": "사용자 지정 Token *",
+        "placeholder": "안전하게 보관할 수 있는 Token을 입력하세요",
+        "description": "저장하면 현재 로그인이 만료되며 새 Token으로 다시 로그인해야 합니다.",
+        "requirements": "Token 요구 사항",
+        "show": "Token 표시",
+        "hide": "Token 숨기기"
+      },
       "botBasic": {
         "platform": {
           "label": "플랫폼 *",
@@ -632,11 +821,11 @@
         "multipleReplyStyle": {
           "label": "대체 답변 스타일",
           "placeholder": "한 줄에 하나씩 대체 답변 스타일을 입력하세요",
-          "description": "목록이 비어 있지 않으면 MaiBot 이 아래 확률에 따라 기본 답변 스타일을 무작위로 대체합니다"
+          "description": "목록이 비어 있지 않으면 MaiBot 이 아래 확률에 따라 대체 스타일을 일회성 답변 힌트로 주입합니다"
         },
         "multipleProbability": {
-          "label": "대체 스타일 적용 확률",
-          "description": "답변을 만들 때마다 기본 답변 스타일을 대체 스타일로 무작위 교체할 확률입니다"
+          "label": "임시 스타일 주입 확률",
+          "description": "답변을 만들 때마다 일회성 대체 스타일 힌트를 주입할 확률입니다"
         }
       },
       "emoji": {
@@ -716,6 +905,29 @@
       }
     }
   },
+  "versionCompatibility": {
+    "checking": "메인 프로그램과 WebUI 버전을 확인하는 중...",
+    "eyebrow": "버전 호환성 경고",
+    "mainProgramVersion": "메인 프로그램 버전",
+    "webuiVersion": "현재 WebUI 버전",
+    "requiredWebuiVersion": "메인 프로그램이 요구하는 WebUI 버전",
+    "updateTargetLabel": "업데이트 필요: {{target}}",
+    "riskWarning": "일치하지 않는 버전을 계속 사용하면 페이지 오류, API 사용 불가 또는 설정 오류가 발생할 수 있습니다. 업데이트 후 계속하세요.",
+    "countdownHint": "위 경고를 확인하세요. {{seconds}}초 후 이 페이지를 닫을 수 있습니다.",
+    "confirmHint": "이제 위험을 확인하고 계속할 수 있습니다.",
+    "countdownButton": "{{seconds}}초 후 확인",
+    "confirmButton": "경고를 닫고 계속",
+    "webuiOutdated": {
+      "title": "WebUI 버전이 너무 낮습니다",
+      "description": "현재 WebUI v{{currentVersion}}은 메인 프로그램이 요구하는 v{{requiredVersion}}보다 낮습니다. WebUI 정적 리소스 패키지를 업데이트하세요.",
+      "updateTarget": "WebUI"
+    },
+    "mainProgramOutdated": {
+      "title": "메인 프로그램 버전이 너무 낮습니다",
+      "description": "메인 프로그램 v{{mainVersion}}은 WebUI v{{requiredVersion}}을 선언하지만 WebUI v{{webuiVersion}}이 실행 중입니다. MaiBot 메인 프로그램을 업데이트하세요.",
+      "updateTarget": "MaiBot 메인 프로그램"
+    }
+  },
   "common": {
     "loading": "불러오는 중...",
     "error": "오류",
@@ -761,13 +973,43 @@
     "copyError": "오류 정보 복사"
   },
   "search": {
-    "placeholder": "페이지 검색...",
+    "placeholder": "페이지, 설정 또는 해결하려는 문제 검색...",
     "title": "검색",
-    "noResults": "일치하는 페이지를 찾을 수 없습니다",
+    "noResults": "일치하는 페이지나 설정 항목을 찾을 수 없습니다",
     "startSearch": "키워드를 입력하여 검색 시작",
+    "recent": "최근",
     "navigate": "탐색",
     "select": "선택",
     "close": "닫기",
+    "aiSearch": "AI 검색",
+    "aiSearching": "AI 분석 중",
+    "aiHint": "‘MaiBot이 너무 자주 말해요’처럼 원하는 결과를 설명할 수 있습니다",
+    "progressTitle": "검색 과정",
+    "progressExpand": "검색 과정 펼치기",
+    "progressCollapse": "검색 과정 접기",
+    "progressStart": "질문 분석 시작",
+    "progressPlanning": "{{round}}차: 검색 계획",
+    "progressSearchWebui": "페이지 및 설정 검색",
+    "progressReadWebui": "페이지 및 설정 설명 읽기",
+    "progressSearchDocs": "공식 문서 검색",
+    "progressReadDocs": "공식 문서 읽기",
+    "progressTool": "검색 작업 실행",
+    "progressCompleted": "{{action}} 완료 ({{count}}개)",
+    "progressFailed": "{{action}} 실패",
+    "progressFinalizing": "읽은 자료를 바탕으로 답변 정리",
+    "progressCorrecting": "근거가 부족한 항목을 감지하여 답변을 다시 정리하는 중",
+    "progressCacheHit": "같은 질문의 캐시 결과 사용",
+    "progressAnswerCompleted": "답변 생성 완료",
+    "progressAnswerFailed": "답변 생성 실패",
+    "aiShortcut": "Ctrl + Enter",
+    "aiRecommendation": "AI 추천",
+    "aiAnswer": "AI 답변",
+    "aiSuggestions": "제안",
+    "aiSources": "공식 문서",
+    "aiUnderstood": "AI 해석: {{terms}}",
+    "aiNoResults": "충분히 관련된 페이지나 설정 항목을 찾지 못했습니다",
+    "aiFailed": "AI 검색에 실패했습니다",
+    "indexLoading": "설정 검색 인덱스를 불러오는 중…",
     "categories": {
       "overview": "개요",
       "config": "설정",
@@ -779,10 +1021,9 @@
     "items": {
       "home": "홈",
       "homeDesc": "대시보드 개요 보기",
+      "focusCompanionDesc": "MaiBot 몰입형 집중 동반 화면 열기",
       "botConfig": "속 메인 설정",
       "botConfigDesc": "속 핵심 설정 구성",
-      "modelProvider": "모델 공급자 설정",
-      "modelProviderDesc": "모델 공급자 구성",
       "model": "모델 설정",
       "modelDesc": "모델 매개변수 구성",
       "promptGeneratorDesc": "문장에서 주입 가능한 페르소나 설정 블록 생성",
@@ -799,18 +1040,197 @@
       "statisticsDesc": "사용 통계 보기",
       "plugins": "플러그인 마켓",
       "pluginsDesc": "플러그인 탐색 및 설치",
+      "dataTransferDesc": "로컬 캐시 관리 및 MaiBot 데이터 백업, 내보내기 또는 복원",
       "logs": "로그 뷰어",
       "logsDesc": "시스템 로그 보기",
       "reasoningProcessDesc": "Maisaka prompt 추론 로그 보기",
-      "settings": "설정",
-      "settingsDesc": "시스템 설정 구성"
+      "settings": "WebUI 설정",
+      "settingsDesc": "WebUI 설정 구성"
     }
   },
   "a11y": {
-    "skipToContent": "메인 콘텐츠로 건너뀐기",
+    "skipToContent": "메인 콘텐츠로 건너뛰기",
     "sidebarNav": "메인 내비게이션",
     "closeMenu": "메뉴 닫기",
     "navigatedTo": "{{page}}으로 이동했습니다"
+  },
+  "memory": {
+    "records": {
+      "status": {
+        "active": "활성",
+        "inactive": "비활성",
+        "deleted": "삭제됨",
+        "conflicted": "충돌 있음",
+        "superseded": "대체됨",
+        "retracted": "철회됨"
+      },
+      "evidenceType": {
+        "paragraph": "문단",
+        "relation": "관계",
+        "entity": "엔터티",
+        "fact": "사실",
+        "episode": "에피소드",
+        "profile": "인물 프로필",
+        "manual": "수동",
+        "unknown": "알 수 없음"
+      },
+      "evidenceStance": {
+        "support": "지지",
+        "refute": "반박"
+      },
+      "graphJobStatus": {
+        "pending": "대기 중",
+        "running": "처리 중",
+        "failed": "실패",
+        "completed": "완료",
+        "cancelled": "취소됨"
+      }
+    },
+    "tuning": {
+      "task": {
+        "title": "튜닝 작업",
+        "description": "검색 매개변수 평가"
+      },
+      "form": {
+        "parameters": "튜닝 매개변수",
+        "parametersDescription": "이 설정은 다음 튜닝 작업에만 적용됩니다. 일반적으로 기본값을 그대로 사용하면 됩니다.",
+        "strategy": "튜닝 전략",
+        "objective": "최적화 목표",
+        "intensity": "평가 깊이",
+        "evalScope": "평가 범위",
+        "sampleSize": "샘플 수",
+        "topKEval": "평가 Top-K",
+        "persist": "설정 파일에도 쓰기"
+      },
+      "objectives": {
+        "precision": "정확도 우선",
+        "balanced": "정확도와 재현율 균형",
+        "recall": "재현율 우선"
+      },
+      "intensity": {
+        "quick": "빠름",
+        "standard": "표준",
+        "deep": "심층"
+      },
+      "actions": {
+        "createTask": "튜닝 작업 만들기",
+        "applyBest": "최적값 적용",
+        "showToml": "설정 조각 보기",
+        "showSummary": "결과 요약으로 돌아가기"
+      },
+      "tasks": {
+        "title": "최근 튜닝 작업",
+        "description": "작업 결과",
+        "recommended": "추천",
+        "notRecommended": "비추천",
+        "empty": "튜닝 작업이 없습니다"
+      },
+      "status": {
+        "completed": "완료",
+        "running": "실행 중",
+        "queued": "대기 중",
+        "failed": "실패",
+        "cancelled": "취소됨"
+      },
+      "result": {
+        "noTask": "아직 튜닝 결과가 없습니다. 작업이 완료되면 평가 결과가 여기에 표시됩니다.",
+        "statusTitle": "작업 상태",
+        "progressTitle": "진행률",
+        "roundsTitle": "평가 라운드",
+        "recommendationTitle": "적용 판단",
+        "recommended": "검증을 통과했습니다. 적용을 권장합니다.",
+        "notRecommended": "검증을 통과하지 못했습니다. 적용을 권장하지 않습니다.",
+        "scoreTitle": "종합 점수",
+        "validationTitle": "Holdout 검증",
+        "validationPassed": "통과",
+        "validationFailed": "미통과",
+        "holdoutWithCount": "{{result}}, 샘플 {{count}}개",
+        "metricsTitle": "주요 지표",
+        "metricsDescription": "기준값에서 최적 결과까지의 변화를 표시합니다.",
+        "reason": "이유: {{reason}}",
+        "errorReason": "실패 이유: {{reason}}",
+        "reasons": {
+          "holdoutEmpty": "Holdout 샘플이 부족해 튜닝 결과를 검증할 수 없습니다.",
+          "holdoutOnlineLikeValidationFailed": "Holdout 및 온라인 유사 검증을 통과하지 못했습니다.",
+          "unknown": "{{reason}}"
+        },
+        "metrics": {
+          "precisionAt1": "P@1",
+          "recallAtK": "Recall@K",
+          "emptyRate": "빈 결과율",
+          "avgElapsedMs": "평균 소요 시간"
+        }
+      },
+      "snapshot": {
+        "title": "현재 튜닝 결과",
+        "summaryDescription": "최근 완료된 작업의 평가 결과를 먼저 표시하고, 매개변수는 세부 정보에 둡니다.",
+        "tomlDescription": "수동 복사나 문제 확인에 사용하는 설정 조각입니다.",
+        "runtimeTitle": "런타임 적용",
+        "runtimeDescription": "현재 검색 런타임에 즉시 적용된 매개변수입니다.",
+        "runtimeResultApplied": "튜닝 결과가 현재 검색 런타임에 적용되어 있습니다.",
+        "runtimeResultEmpty": "아직 런타임 결과가 없습니다.",
+        "persistableTitle": "저장 가능한 설정",
+        "persistableDescription": "설정 파일에 쓸 수 있는 매개변수입니다.",
+        "persistableResultReady": "이 결과는 필요할 때 설정 파일에 저장할 수 있습니다.",
+        "persistableResultEmpty": "아직 저장 가능한 결과가 없습니다.",
+        "diffTitle": "차이",
+        "diffDescription": "런타임 설정과 저장 가능한 설정이 다른 항목입니다.",
+        "diffResultClean": "런타임 설정과 저장 가능한 설정이 일치합니다.",
+        "diffResultChanged": "런타임 설정과 저장 가능한 설정에 차이가 있습니다. 세부 정보에서 확인할 수 있습니다.",
+        "detailsTitle": "매개변수와 설정 세부 정보",
+        "detailsHint": "문제 확인과 비교용",
+        "parameterDetailsTitle": "매개변수 세부 정보",
+        "runtimeShort": "런타임",
+        "persistableShort": "저장 가능",
+        "empty": "데이터 없음",
+        "noDiff": "현재 두 설정에 차이가 없습니다.",
+        "technicalCount": "요약에는 기술 필드 {{count}}개가 숨겨져 있습니다. 설정 조각에서 확인할 수 있습니다.",
+        "technicalDiffCount": "요약에는 기술적 차이 {{count}}개가 숨겨져 있습니다. 설정 조각에서 확인할 수 있습니다."
+      },
+      "values": {
+        "enabled": "켜짐",
+        "disabled": "꺼짐",
+        "auto": "자동",
+        "always": "항상 켬",
+        "off": "꺼짐",
+        "weightedRrf": "가중 융합",
+        "rrf": "순위 융합",
+        "alphaLegacy": "이전 방식 가중 융합",
+        "singlePool": "단일 벡터 풀",
+        "dualPool": "이중 벡터 풀"
+      },
+      "parameters": {
+        "retrieval_top_k": "전체 후보 수",
+        "retrieval_top_k_paragraphs": "문단 후보 수",
+        "retrieval_top_k_relations": "관계 후보 수",
+        "retrieval_top_k_final": "최종 반환 수",
+        "retrieval_alpha": "문단과 관계 가중치",
+        "retrieval_enable_ppr": "그래프 순위화",
+        "retrieval_ppr_alpha": "그래프 전이 계수",
+        "retrieval_ppr_timeout_seconds": "그래프 순위화 제한 시간",
+        "retrieval_search_smart_fallback_enabled": "스마트 대체 검색",
+        "retrieval_sparse_enabled": "키워드 검색",
+        "retrieval_sparse_mode": "키워드 검색 모드",
+        "retrieval_sparse_candidate_k": "키워드 문단 후보",
+        "retrieval_sparse_relation_candidate_k": "키워드 관계 후보",
+        "retrieval_fusion_method": "결과 융합 방식",
+        "retrieval_fusion_rrf_k": "융합 완화 계수",
+        "retrieval_fusion_vector_weight": "벡터 검색 가중치",
+        "retrieval_fusion_bm25_weight": "키워드 검색 가중치",
+        "retrieval_vector_pools_mode": "벡터 풀 모드",
+        "retrieval_vector_pools_paragraph_top_k": "문단 벡터 후보",
+        "retrieval_vector_pools_graph_top_k": "그래프 벡터 후보",
+        "retrieval_vector_pools_graph_expand_paragraph_k": "그래프 확장 문단 수",
+        "retrieval_vector_pools_relation_expand_per_hit": "히트당 관계 확장 수",
+        "retrieval_vector_pools_entity_expand_per_hit": "히트당 엔티티 확장 수",
+        "retrieval_vector_pools_relation_evidence_weight": "관계 근거 가중치",
+        "retrieval_vector_pools_entity_evidence_weight": "엔티티 근거 가중치",
+        "threshold_percentile": "동적 임계값 분위",
+        "threshold_min_results": "최소 반환 수",
+        "threshold_min_threshold": "최소 임계값",
+        "threshold_max_threshold": "최대 임계값"
+      }
+    }
   },
   "home": {
     "title": "실시간 모니터",
@@ -823,18 +1243,101 @@
       "30d": "30일"
     },
     "autoRefresh": "자동 새로고침",
+    "hitokoto": {
+      "title": "한마디",
+      "edit": "한마디 편집",
+      "editor": {
+        "title": "한마디 편집",
+        "description": "홈에 표시할 한마디 출처와 사용자 지정 내용을 관리합니다.",
+        "defaultSource": "기본 한마디 사용",
+        "defaultSourceDescription": "한마디 API에서 가져와 사용자 지정 내용과 번갈아 표시합니다.",
+        "customList": "사용자 지정 내용",
+        "customListDescription": "여러 내용을 추가할 수 있으며 출처는 비워둘 수 있습니다.",
+        "add": "내용 추가",
+        "empty": "사용자 지정 내용이 없습니다. 클릭하여 첫 내용을 추가하세요.",
+        "item": "내용 {{index}}",
+        "remove": "내용 {{index}} 삭제",
+        "content": "내용 {{index}} 본문",
+        "contentPlaceholder": "홈에 표시할 내용을 입력하세요",
+        "source": "내용 {{index}} 출처",
+        "sourcePlaceholder": "출처(선택)",
+        "blankHint": "기본 한마디가 꺼져 있고 사용자 지정 목록이 비어 있어 한마디 영역이 비어 있습니다.",
+        "saving": "저장 중..."
+      }
+    },
+    "cards": {
+      "add": "카드 추가",
+      "edit": "카드 편집",
+      "editCard": "카드 편집: {{title}}",
+      "editContent": "카드 내용 편집",
+      "done": "완료",
+      "reset": "기본값 복원",
+      "styles": {
+        "default": {
+          "title": "기본 스타일",
+          "description": "현재 테마의 표준 카드 모양을 사용합니다."
+        },
+        "orange": {
+          "title": "주황색 배경",
+          "description": "테마 주황색을 배경으로, 페이지 배경색을 글자색으로 사용합니다."
+        },
+        "borderless": {
+          "title": "테두리와 배경 없음",
+          "description": "카드 테두리, 배경, 무늬 및 그림자를 제거합니다."
+        }
+      },
+      "styleDialog": {
+        "title": "「{{title}}」 편집",
+        "description": "홈 화면에서 이 카드의 표시 스타일을 선택합니다.",
+        "done": "완료"
+      },
+      "row": {
+        "low": "낮은 행",
+        "high": "높은 행"
+      },
+      "categories": {
+        "status": "실행 상태",
+        "statistics": "통계 차트",
+        "analysis": "모델 분석",
+        "plugin": "플러그인 카드"
+      },
+      "dialog": {
+        "title": "홈 카드 관리",
+        "description": "플러그인 또는 기본 제공 카드를 추가하거나 기본 레이아웃으로 복원합니다.",
+        "hiddenCards": "추가 가능한 카드",
+        "noHiddenCards": "추가 가능한 카드가 없습니다",
+        "restore": "추가",
+        "reset": "기본 레이아웃 복원",
+        "cancel": "닫기"
+      }
+    },
     "botStatus": {
       "title": "MaiBot 상태",
       "loading": "읽는 중",
-      "running": "실행 중",
+      "running": "활동",
       "stopped": "중지됨",
       "unknown": "알 수 없음",
-      "uptime": "가동 {{time}}",
+      "uptimeLabel": "가동 시간",
+      "uptime": "{{time}}",
+      "enabled": "켜짐",
+      "disabled": "꺼짐",
       "visualEnabled": "비전 활성화",
-      "memoryEnabled": "메모리 활성화"
+      "memoryEnabled": "메모리 활성화",
+      "recentOnline": "최근 온라인",
+      "recentOnlineRange": "최근 24시간",
+      "recentOnlineChart": "최근 24시간 온라인 시간 차트",
+      "recentOnlineTotal": "온라인 {{time}}",
+      "online": "온라인",
+      "clickToReturn": "클릭하여 돌아가기",
+      "showRecentOnline": "최근 온라인 차트 보기",
+      "showStatus": "활동 상태로 돌아가기"
     },
     "versionCard": {
       "title": "MaiBot 버전",
+      "maibotVersion": "MAIBOT",
+      "consoleVersion": "CONSOLE",
+      "updateAvailable": "UPDATE",
+      "mismatch": "버전 불일치",
       "mainVersion": "코어 버전",
       "webuiVersion": "WebUI 버전",
       "latestVersion": "최신 버전",
@@ -843,6 +1346,12 @@
       "githubReleases": "GitHub Releases",
       "unknown": "알 수 없음"
     },
+    "platformGuide": {
+      "title": "플랫폼 계정 추가",
+      "description": "MaiBot을 메시지 플랫폼에 연결할 계정이 아직 설정되지 않았습니다.",
+      "detail": "플랫폼과 계정을 설정하면 MaiBot이 QQ 등 메시지 앱에서 메시지를 주고받을 수 있습니다.",
+      "action": "플랫폼 계정 추가"
+    },
     "quickActions": {
       "title": "빠른 작업",
       "restart": "MaiBot 재시작",
@@ -850,7 +1359,7 @@
       "expressionReview": "표현 검토",
       "viewLogs": "로그 보기",
       "pluginManage": "플러그인 관리",
-      "systemSettings": "시스템 설정",
+      "systemSettings": "WebUI 설정",
       "pluginConfig": "플러그인 설정",
       "appearanceSettings": "외관 설정",
       "localCache": "로컬 캐시",
@@ -869,7 +1378,7 @@
         "expressionReview": "표현 학습 검토 대화상자 열기",
         "viewLogs": "WebUI 로그 보기",
         "pluginManage": "플러그인 마켓과 관리 페이지 열기",
-        "systemSettings": "시스템 설정 열기",
+        "systemSettings": "WebUI 설정 열기",
         "pluginConfig": "설치된 플러그인 설정 페이지 열기",
         "appearanceSettings": "설정 / 외관 열기",
         "localCache": "설정 / 로컬 캐시 열기",
@@ -916,13 +1425,17 @@
     },
     "stats": {
       "overviewTitle": "통계 개요",
+      "overviewDesc": "주요 실행 지표",
+      "timeRange": "통계 기간",
       "totalRequests": "총 요청 수",
       "totalCost": "총 비용",
       "tokenUsage": "토큰 소비",
+      "inputTokens": "입력",
+      "outputTokens": "출력",
       "avgResponse": "평균 응답",
       "avgResponseDesc": "API 평균 지연",
       "onlineTime": "온라인 시간",
-      "messageProcessing": "메시지 처리",
+      "messageProcessing": "메시지",
       "costEfficiency": "비용 효율",
       "recentPeriod": "최근 {{range}}",
       "perHour": "{{value}}/시간",
@@ -932,6 +1445,16 @@
       "seconds": "초",
       "hours": "시간",
       "days": "일"
+    },
+    "cache": {
+      "title": "Prompt 캐시",
+      "description": "입력 토큰 캐시 적중 현황",
+      "hitRate": "캐시 적중률",
+      "all": "전체",
+      "chat": "채팅",
+      "hitTokens": "적중 Token",
+      "missTokens": "미적중 Token",
+      "eligibleTokens": "통계 대상 {{value}} Token"
     },
     "storage": {
       "title": "저장소 사용량",
@@ -944,6 +1467,10 @@
       "files": "{{count}}개 파일",
       "filesAndRecords": "{{files}}개 파일 · {{records}}개 기록",
       "databaseDetail": "{{files}}개 파일 · {{tables}}개 테이블",
+      "sizeMode": "크기",
+      "countMode": "수량",
+      "switchDisplay": "저장소 정보 표시 전환",
+      "countSummary": "{{files}}개 파일 · {{records}}개 기록 · {{tables}}개 테이블",
       "readingDescription": "로컬 저장소 사용량을 읽는 중...",
       "unavailable": "로컬 저장소 사용량을 가져오지 못했습니다",
       "manage": "저장소 관리"
@@ -957,18 +1484,22 @@
       },
       "requestTrend": "요청 트렌드",
       "requestTrendDesc": "최근 {{hours}}시간의 요청량 변화",
+      "requestTrendDescCompact": "시간별 요청량 변화",
       "costTrend": "비용 트렌드",
       "costTrendDesc": "API 호출 비용 변화",
       "tokenUsage": "토큰 소비",
       "tokenUsageDesc": "토큰 사용량 변화",
-      "modelDistribution": "모델 요청 분포",
-      "modelDistributionDesc": "모델별 사용 비율 ({{count}}개 모델)",
+      "tokenUsageSplitDesc": "입력 및 출력 토큰 변화",
+      "modelDistribution": "모델 비용 분포",
+      "modelDistributionDesc": "모델별 비용 비율 ({{count}}개 모델)",
+      "modelDistributionCardDesc": "모델별 누적 비용 비율",
       "modelDetails": "모델 상세 통계",
       "modelDetailsDesc": "요청 수, 비용 및 성능",
-      "recentActivity": "최근 활동",
-      "recentActivityDesc": "최신 API 호출 기록",
+      "modelDetailsTokenDesc": "모델별 호출, Token, 캐시 및 비용",
       "dailyStats": "일간 통계",
       "dailyStatsDesc": "최근 7일 데이터 요약",
+      "dailyStatsRangeDesc": "선택한 기간의 일간 요약",
+      "date": "날짜",
       "requests": "요청 수",
       "cost": "비용(¥)",
       "requestCount": "요청 수",

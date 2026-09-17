@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -51,17 +52,22 @@ def test_person_fact_resolve_target_person_for_group_without_reply(monkeypatch):
     class FakePerson:
         def __init__(self, person_id: str):
             self.person_id = person_id
-            self.is_known = person_id == "qq:user-1"
+            self.is_known = person_id in {"qq:user-1", "qq:user-2"}
 
-    recent_user_message = SimpleNamespace(
+    older_user_message = SimpleNamespace(
         platform="qq",
         user_id="user-1",
         message_info=SimpleNamespace(user_info=SimpleNamespace(user_id="user-1")),
     )
+    latest_user_message = SimpleNamespace(
+        platform="qq",
+        user_id="user-2",
+        message_info=SimpleNamespace(user_info=SimpleNamespace(user_id="user-2")),
+    )
 
     def fake_find_messages(**kwargs):
         if kwargs.get("session_id") == "session-1":
-            return [recent_user_message]
+            return [older_user_message, latest_user_message]
         return []
 
     service = memory_flow_module.PersonFactWritebackService.__new__(memory_flow_module.PersonFactWritebackService)
@@ -80,7 +86,51 @@ def test_person_fact_resolve_target_person_for_group_without_reply(monkeypatch):
     person = service._resolve_target_person(message)
 
     assert person is not None
-    assert person.person_id == "qq:user-1"
+    assert person.person_id == "qq:user-2"
+
+
+def test_person_fact_collect_user_evidence_keeps_latest_target_messages_without_reply(monkeypatch):
+    class FakePerson:
+        person_id = "qq:user-1"
+
+    def make_message(message_id: str, user_id: str, text: str):
+        return SimpleNamespace(
+            message_id=message_id,
+            platform="qq",
+            user_id=user_id,
+            processed_plain_text=text,
+            message_info=SimpleNamespace(user_info=SimpleNamespace(user_id=user_id)),
+        )
+
+    messages = [
+        make_message("user-1-a", "user-1", "第一条旧证据"),
+        make_message("user-2-a", "user-2", "其他人的插话"),
+        make_message("user-1-b", "user-1", "第二条证据"),
+        make_message("user-1-c", "user-1", "第三条证据"),
+        make_message("user-1-d", "user-1", "第四条最新证据"),
+    ]
+
+    def fake_find_messages(**kwargs):
+        if kwargs.get("session_id") == "session-1":
+            return messages
+        return []
+
+    service = memory_flow_module.PersonFactWritebackService.__new__(memory_flow_module.PersonFactWritebackService)
+    monkeypatch.setattr(memory_flow_module, "find_messages", fake_find_messages)
+    monkeypatch.setattr(memory_flow_module, "is_bot_self", lambda platform, user_id: False)
+    monkeypatch.setattr(memory_flow_module, "get_person_id", lambda platform, user_id: f"{platform}:{user_id}")
+
+    message = SimpleNamespace(
+        session_id="session-1",
+        timestamp=20.0,
+        reply_to="",
+        session=SimpleNamespace(session_id="session-1"),
+    )
+
+    evidence = service._collect_user_evidence(message, FakePerson())
+
+    assert [item.message_id for item in evidence.target_messages] == ["user-1-b", "user-1-c", "user-1-d"]
+    assert evidence.context_messages == messages
 
 
 def test_person_fact_reply_evidence_keeps_context_for_short_answer(monkeypatch):
@@ -427,6 +477,7 @@ def test_summary_prompt_keeps_static_rules_before_chat_history():
         personality_context="你的性格设定是：稳定。",
         previous_summary_context="",
         chat_history="用户：第一条动态消息",
+        image_evidence_catalog="无",
     )
 
     rules_index = prompt.index("事实筛选规则")
@@ -442,6 +493,7 @@ def test_summary_prompt_forbids_repeating_rejected_fact_values():
         personality_context="你的性格设定是：稳定。",
         previous_summary_context="",
         chat_history="用户：不是猫毛，是青霉素",
+        image_evidence_catalog="无",
     )
 
     assert "只输出最终正确事实" in prompt
@@ -449,10 +501,10 @@ def test_summary_prompt_forbids_repeating_rejected_fact_values():
     assert "不得出现已否定、未确认、传闻、玩笑、注入、机器人误解、旧计划或旧金额中的具体值" in prompt
 
 
-def test_summary_review_cleaner_drops_fully_blocked_dirty_content():
+def test_summary_review_cleaner_does_not_guess_validity_from_keywords():
     dirty_summary = "此前记录林遥对花生过敏，这是测试示例，后来已纠正。"
 
-    assert SummaryImporter._clean_review_summary(dirty_summary) == ""
+    assert SummaryImporter._clean_review_summary(dirty_summary) == dirty_summary
 
 
 @pytest.mark.asyncio
@@ -499,6 +551,10 @@ async def test_chat_summary_writeback_service_falls_back_to_current_count_for_le
 async def test_chat_summary_writeback_service_loads_trigger_count_from_summary_metadata(monkeypatch):
     class FakeMetadataStore:
         @staticmethod
+        def get_summary_checkpoint_count(chat_id: str) -> int:
+            return 0
+
+        @staticmethod
         def get_paragraphs_by_source(source: str):
             assert source == "chat_summary:session-1"
             return [
@@ -521,7 +577,11 @@ async def test_chat_summary_writeback_service_loads_trigger_count_from_summary_m
 
 
 @pytest.mark.asyncio
-async def test_memory_automation_service_auto_starts_and_delegates():
+async def test_memory_automation_service_auto_starts_and_delegates(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(memory_flow_module.ImageMemoryWritebackService, 'start', AsyncMock())
+    monkeypatch.setattr(memory_flow_module.ImageMemoryWritebackService, 'shutdown', AsyncMock())
     events: list[tuple[str, str]] = []
 
     class FakeFactWriteback:
@@ -562,7 +622,12 @@ async def test_memory_automation_service_auto_starts_and_delegates():
 
 
 @pytest.mark.asyncio
-async def test_memory_automation_service_on_incoming_message_auto_starts_only():
+async def test_memory_automation_service_on_incoming_message_auto_starts_only(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(memory_flow_module.ImageMemoryWritebackService, 'start', AsyncMock())
+    monkeypatch.setattr(memory_flow_module.ImageMemoryWritebackService, 'enqueue', AsyncMock())
+    monkeypatch.setattr(memory_flow_module.ImageMemoryWritebackService, 'shutdown', AsyncMock())
     events: list[tuple[str, str]] = []
 
     class FakeFactWriteback:
@@ -598,3 +663,13 @@ async def test_memory_automation_service_on_incoming_message_auto_starts_only():
         ("shutdown", "summary"),
         ("shutdown", "fact"),
     ]
+
+
+def test_chat_summary_writeback_metadata_decodes_json_bytes_only():
+    metadata = memory_flow_module.ChatSummaryWritebackService._paragraph_metadata(
+        {"metadata": json.dumps({"trigger_message_count": 7}).encode("utf-8")}
+    )
+    invalid = memory_flow_module.ChatSummaryWritebackService._paragraph_metadata({"metadata": b"not-json-or-utf8"})
+
+    assert metadata == {"trigger_message_count": 7}
+    assert invalid == {}

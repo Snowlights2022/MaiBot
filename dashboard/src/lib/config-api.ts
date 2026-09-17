@@ -1,16 +1,21 @@
 /**
  * 配置API客户端
+ *
+ * 请求样板（认证、解析、错误格式化）由 @/lib/http 的请求客户端承担；
+ * 本文件只声明 endpoint、业务错误文案、响应解包规则与配置数据缓存。
+ * 公开函数遵循 throw 契约：成功返回数据，失败抛 ApiError。
  */
 
-import { parseResponse } from '@/lib/api-helpers'
-import { fetchWithAuth } from '@/lib/fetch-with-auth'
-import type { ApiResponse } from '@/types/api'
+import { ApiError, backendApi } from '@/lib/http'
 import type { ConfigSchema } from '@/types/config-schema'
 
 const API_BASE = '/api/webui/config'
 export const BOT_CONFIG_UPDATED_EVENT = 'maibot:bot-config-updated'
-const schemaRequestCache = new Map<string, Promise<ApiResponse<ConfigSchema>>>()
-const configDataCache = new Map<string, { timestamp: number; request: Promise<ApiResponse<Record<string, unknown>>> }>()
+const schemaRequestCache = new Map<string, Promise<ConfigSchema>>()
+const configDataCache = new Map<
+  string,
+  { timestamp: number; request: Promise<Record<string, unknown>> }
+>()
 const CONFIG_DATA_CACHE_TTL = 30_000
 
 function unwrapConfigResponse(data: unknown): Record<string, unknown> {
@@ -31,16 +36,20 @@ function unwrapConfigResponse(data: unknown): Record<string, unknown> {
   return {}
 }
 
-function getCachedSchema(key: string, url: string): Promise<ApiResponse<ConfigSchema>> {
+function getCachedSchema(key: string, url: string): Promise<ConfigSchema> {
   const cachedRequest = schemaRequestCache.get(key)
   if (cachedRequest) {
     return cachedRequest
   }
 
-  const request = fetchWithAuth(url, { cache: 'no-store' })
-    .then((response) => parseResponse<ConfigSchema>(response))
-    .catch((error) => {
-      schemaRequestCache.delete(key)
+  const request = backendApi
+    .get<ConfigSchema>(url, { cache: 'no-store', errorMessage: '获取配置架构失败' })
+    .catch((error: unknown) => {
+      // HTTP 层失败（带 status 的 ApiError）保留被拒绝的 Promise 在缓存中，
+      // 避免对失败的配置接口反复发起请求；请求未到达服务器等瞬时异常则剔除缓存后重抛
+      if (!(error instanceof ApiError) || error.status === undefined) {
+        schemaRequestCache.delete(key)
+      }
       throw error
     })
 
@@ -48,19 +57,20 @@ function getCachedSchema(key: string, url: string): Promise<ApiResponse<ConfigSc
   return request
 }
 
-function getCachedConfigData(key: string, url: string): Promise<ApiResponse<Record<string, unknown>>> {
+function getCachedConfigData(key: string, url: string): Promise<Record<string, unknown>> {
   const cachedRequest = configDataCache.get(key)
   if (cachedRequest && Date.now() - cachedRequest.timestamp < CONFIG_DATA_CACHE_TTL) {
     return cachedRequest.request
   }
 
-  const request = fetchWithAuth(url, { cache: 'no-store' })
-    .then((response) => parseResponse<unknown>(response))
-    .then((result): ApiResponse<Record<string, unknown>> => (
-      result.success ? { success: true, data: unwrapConfigResponse(result.data) } : result
-    ))
-    .catch((error) => {
-      configDataCache.delete(key)
+  const request = backendApi
+    .get<unknown>(url, { cache: 'no-store', errorMessage: '获取配置失败' })
+    .then((data) => unwrapConfigResponse(data))
+    .catch((error: unknown) => {
+      // HTTP 层失败保留被拒绝的 Promise 在缓存中，避免反复请求失败接口；瞬时异常则剔除缓存后重抛
+      if (!(error instanceof ApiError) || error.status === undefined) {
+        configDataCache.delete(key)
+      }
       throw error
     })
 
@@ -85,49 +95,53 @@ function notifyBotConfigUpdated(): void {
 /**
  * 获取麦麦主程序配置架构
  */
-export async function getBotConfigSchema(): Promise<ApiResponse<ConfigSchema>> {
+export async function getBotConfigSchema(): Promise<ConfigSchema> {
   return getCachedSchema('bot', `${API_BASE}/schema/bot`)
 }
 
 /**
  * 获取模型配置架构
  */
-export async function getModelConfigSchema(): Promise<ApiResponse<ConfigSchema>> {
+export async function getModelConfigSchema(): Promise<ConfigSchema> {
   return getCachedSchema('model', `${API_BASE}/schema/model`)
 }
 
 /**
  * 获取指定配置节的架构
  */
-export async function getConfigSectionSchema(sectionName: string): Promise<ApiResponse<ConfigSchema>> {
+export async function getConfigSectionSchema(sectionName: string): Promise<ConfigSchema> {
   return getCachedSchema(`section:${sectionName}`, `${API_BASE}/schema/section/${sectionName}`)
 }
 
 /**
  * 获取麦麦主程序配置数据
  */
-export async function getBotConfig(): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/bot`, { cache: 'no-store' })
-  const result = await parseResponse<unknown>(response)
-  return result.success ? { success: true, data: unwrapConfigResponse(result.data) } : result
+export async function getBotConfig(): Promise<Record<string, unknown>> {
+  const data = await backendApi.get<unknown>(`${API_BASE}/bot`, {
+    cache: 'no-store',
+    errorMessage: '获取配置失败',
+  })
+  return unwrapConfigResponse(data)
 }
 
 /** Cached config data for lightweight status summaries. */
-export async function getBotConfigCached(): Promise<ApiResponse<Record<string, unknown>>> {
+export async function getBotConfigCached(): Promise<Record<string, unknown>> {
   return getCachedConfigData('bot', `${API_BASE}/bot`)
 }
 
 /**
  * 获取模型配置数据
  */
-export async function getModelConfig(): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/model`, { cache: 'no-store' })
-  const result = await parseResponse<unknown>(response)
-  return result.success ? { success: true, data: unwrapConfigResponse(result.data) } : result
+export async function getModelConfig(): Promise<Record<string, unknown>> {
+  const data = await backendApi.get<unknown>(`${API_BASE}/model`, {
+    cache: 'no-store',
+    errorMessage: '获取配置失败',
+  })
+  return unwrapConfigResponse(data)
 }
 
 /** Cached model config data for lightweight status summaries. */
-export async function getModelConfigCached(): Promise<ApiResponse<Record<string, unknown>>> {
+export async function getModelConfigCached(): Promise<Record<string, unknown>> {
   return getCachedConfigData('model', `${API_BASE}/model`)
 }
 
@@ -136,40 +150,36 @@ export async function getModelConfigCached(): Promise<ApiResponse<Record<string,
  */
 export async function updateBotConfig(
   config: Record<string, unknown>
-): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/bot`, {
-    method: 'POST',
-    body: JSON.stringify(config),
+): Promise<Record<string, unknown>> {
+  const result = await backendApi.post<Record<string, unknown>>(`${API_BASE}/bot`, {
+    body: config,
+    errorMessage: '更新配置失败',
   })
-  const result = await parseResponse<Record<string, unknown>>(response)
-  if (result.success) {
-    invalidateConfigDataCache('bot')
-    notifyBotConfigUpdated()
-  }
+  invalidateConfigDataCache('bot')
+  notifyBotConfigUpdated()
   return result
 }
 
 /**
  * 获取麦麦主程序配置的原始 TOML 内容
  */
-export async function getBotConfigRaw(): Promise<ApiResponse<string>> {
-  const response = await fetchWithAuth(`${API_BASE}/bot/raw`, { cache: 'no-store' })
-  return parseResponse<string>(response)
+export async function getBotConfigRaw(): Promise<string> {
+  return backendApi.get<string>(`${API_BASE}/bot/raw`, {
+    cache: 'no-store',
+    errorMessage: '获取原始配置失败',
+  })
 }
 
 /**
  * 更新麦麦主程序配置（原始 TOML 内容）
  */
-export async function updateBotConfigRaw(rawContent: string): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/bot/raw`, {
-    method: 'POST',
-    body: JSON.stringify({ raw_content: rawContent }),
+export async function updateBotConfigRaw(rawContent: string): Promise<Record<string, unknown>> {
+  const result = await backendApi.post<Record<string, unknown>>(`${API_BASE}/bot/raw`, {
+    body: { raw_content: rawContent },
+    errorMessage: '更新配置失败',
   })
-  const result = await parseResponse<Record<string, unknown>>(response)
-  if (result.success) {
-    invalidateConfigDataCache('bot')
-    notifyBotConfigUpdated()
-  }
+  invalidateConfigDataCache('bot')
+  notifyBotConfigUpdated()
   return result
 }
 
@@ -178,14 +188,102 @@ export async function updateBotConfigRaw(rawContent: string): Promise<ApiRespons
  */
 export async function updateModelConfig(
   config: Record<string, unknown>
-): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/model`, {
-    method: 'POST',
-    body: JSON.stringify(config),
+): Promise<Record<string, unknown>> {
+  const result = await backendApi.post<Record<string, unknown>>(`${API_BASE}/model`, {
+    body: config,
+    errorMessage: '更新配置失败',
   })
-  const result = await parseResponse<Record<string, unknown>>(response)
-  if (result.success) invalidateConfigDataCache('model')
+  invalidateConfigDataCache('model')
   return result
+}
+
+/**
+ * 模型配置文件副本信息
+ */
+export interface ModelConfigVersionInfo {
+  id: string
+  label: string
+  created_at: number
+  modified_at: number
+  size: number
+  active: boolean
+  inner_config_version: string | null
+  valid: boolean
+  error: string | null
+}
+
+/**
+ * 模型配置文件副本列表
+ */
+export interface ModelConfigVersionListResponse {
+  success: boolean
+  active_version: ModelConfigVersionInfo
+  versions: ModelConfigVersionInfo[]
+}
+
+/**
+ * 获取模型配置文件副本列表
+ */
+export async function getModelConfigVersions(): Promise<ModelConfigVersionListResponse> {
+  return backendApi.get<ModelConfigVersionListResponse>(`${API_BASE}/model/versions`, {
+    cache: 'no-store',
+    errorMessage: '获取模型配置副本失败',
+  })
+}
+
+/**
+ * 将当前模型配置保存为副本
+ */
+export async function createModelConfigVersion(label: string): Promise<ModelConfigVersionInfo> {
+  const result = await backendApi.post<{ version: ModelConfigVersionInfo }>(
+    `${API_BASE}/model/versions`,
+    {
+      body: { label },
+      errorMessage: '创建模型配置副本失败',
+    }
+  )
+  return result.version
+}
+
+/**
+ * 切换当前启用的模型配置文件副本
+ */
+export async function switchModelConfigVersion(versionId: string): Promise<ModelConfigVersionInfo> {
+  const result = await backendApi.post<{ version: ModelConfigVersionInfo }>(
+    `${API_BASE}/model/versions/${encodeURIComponent(versionId)}/activate`,
+    {
+      body: { archive_current: true },
+      errorMessage: '切换模型配置副本失败',
+    }
+  )
+  invalidateConfigDataCache('model')
+  return result.version
+}
+
+/**
+ * 更新模型配置副本名称
+ */
+export async function updateModelConfigVersionLabel(
+  versionId: string,
+  label: string
+): Promise<ModelConfigVersionInfo> {
+  const result = await backendApi.patch<{ version: ModelConfigVersionInfo }>(
+    `${API_BASE}/model/versions/${encodeURIComponent(versionId)}`,
+    {
+      body: { label },
+      errorMessage: '更新模型配置副本失败',
+    }
+  )
+  return result.version
+}
+
+/**
+ * 删除模型配置副本
+ */
+export async function deleteModelConfigVersion(versionId: string): Promise<void> {
+  await backendApi.delete(`${API_BASE}/model/versions/${encodeURIComponent(versionId)}`, {
+    errorMessage: '删除模型配置副本失败',
+  })
 }
 
 /**
@@ -194,16 +292,16 @@ export async function updateModelConfig(
 export async function updateBotConfigSection(
   sectionName: string,
   sectionData: unknown
-): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/bot/section/${sectionName}`, {
-    method: 'POST',
-    body: JSON.stringify(sectionData),
-  })
-  const result = await parseResponse<Record<string, unknown>>(response)
-  if (result.success) {
-    invalidateConfigDataCache('bot')
-    notifyBotConfigUpdated()
-  }
+): Promise<Record<string, unknown>> {
+  const result = await backendApi.post<Record<string, unknown>>(
+    `${API_BASE}/bot/section/${sectionName}`,
+    {
+      body: sectionData,
+      errorMessage: '更新配置失败',
+    }
+  )
+  invalidateConfigDataCache('bot')
+  notifyBotConfigUpdated()
   return result
 }
 
@@ -213,13 +311,15 @@ export async function updateBotConfigSection(
 export async function updateModelConfigSection(
   sectionName: string,
   sectionData: unknown
-): Promise<ApiResponse<Record<string, unknown>>> {
-  const response = await fetchWithAuth(`${API_BASE}/model/section/${sectionName}`, {
-    method: 'POST',
-    body: JSON.stringify(sectionData),
-  })
-  const result = await parseResponse<Record<string, unknown>>(response)
-  if (result.success) invalidateConfigDataCache('model')
+): Promise<Record<string, unknown>> {
+  const result = await backendApi.post<Record<string, unknown>>(
+    `${API_BASE}/model/section/${sectionName}`,
+    {
+      body: sectionData,
+      errorMessage: '更新配置失败',
+    }
+  )
+  invalidateConfigDataCache('model')
   return result
 }
 
@@ -256,15 +356,14 @@ export interface ModelClientType {
 /**
  * 获取当前主程序与插件已注册的模型客户端类型
  */
-export async function fetchModelClientTypes(): Promise<ApiResponse<ModelClientType[]>> {
-  const response = await fetchWithAuth('/api/webui/models/client-types')
-  const parsed = await parseResponse<{ client_types?: ModelClientType[] } | ModelClientType[]>(response)
-  if (!parsed.success) {
-    return parsed
-  }
-  const body = parsed.data
-  const clientTypes = Array.isArray(body) ? body : Array.isArray(body?.client_types) ? body.client_types : []
-  return { success: true, data: clientTypes }
+export async function fetchModelClientTypes(): Promise<ModelClientType[]> {
+  const body = await backendApi.get<{ client_types?: ModelClientType[] } | ModelClientType[]>(
+    '/api/webui/models/client-types',
+    {
+      errorMessage: '获取模型客户端类型失败',
+    }
+  )
+  return Array.isArray(body) ? body : Array.isArray(body?.client_types) ? body.client_types : []
 }
 
 /**
@@ -277,21 +376,20 @@ export async function fetchProviderModels(
   providerName: string,
   parser: 'openai' | 'gemini' = 'openai',
   endpoint: string = '/models'
-): Promise<ApiResponse<ModelListItem[]>> {
-  const params = new URLSearchParams({
-    provider_name: providerName,
-    parser,
-    endpoint,
-  })
-  const response = await fetchWithAuth(`/api/webui/models/list?${params}`)
+): Promise<ModelListItem[]> {
   // 后端返回 { success, models, provider, count }，需要展开取出 models 数组
-  const parsed = await parseResponse<{ models?: ModelListItem[] } | ModelListItem[]>(response)
-  if (!parsed.success) {
-    return parsed
-  }
-  const body = parsed.data
-  const models = Array.isArray(body) ? body : Array.isArray(body?.models) ? body.models : []
-  return { success: true, data: models }
+  const body = await backendApi.get<{ models?: ModelListItem[] } | ModelListItem[]>(
+    '/api/webui/models/list',
+    {
+      query: {
+        provider_name: providerName,
+        parser,
+        endpoint,
+      },
+      errorMessage: '获取模型列表失败',
+    }
+  )
+  return Array.isArray(body) ? body : Array.isArray(body?.models) ? body.models : []
 }
 
 /**
@@ -306,17 +404,50 @@ export interface TestConnectionResult {
 }
 
 /**
+ * 单个模型测试返回的工具调用摘要
+ */
+export interface ModelTestToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+/**
+ * 单个模型测试结果
+ */
+export interface ModelTestResult {
+  success: boolean
+  model_name: string
+  visual_tested: boolean
+  tool_call_ok: boolean
+  response: string
+  reasoning: string
+  tool_calls: ModelTestToolCall[]
+  latency_ms: number | null
+  error: string | null
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
+/**
  * 测试提供商连接状态（通过提供商名称）
  * @param providerName 提供商名称
  */
-export async function testProviderConnection(
-  providerName: string
-): Promise<ApiResponse<TestConnectionResult>> {
-  const params = new URLSearchParams({
-    provider_name: providerName,
+export async function testProviderConnection(providerName: string): Promise<TestConnectionResult> {
+  return backendApi.post<TestConnectionResult>('/api/webui/models/test-connection-by-name', {
+    query: { provider_name: providerName },
+    errorMessage: '测试提供商连接失败',
   })
-  const response = await fetchWithAuth(`/api/webui/models/test-connection-by-name?${params}`, {
-    method: 'POST',
+}
+
+/**
+ * 测试单个模型的文本、tool call 与可选视觉能力
+ * @param modelName 模型名称
+ */
+export async function testModelCapability(modelName: string): Promise<ModelTestResult> {
+  return backendApi.post<ModelTestResult>('/api/webui/models/test-model', {
+    body: { model_name: modelName },
+    errorMessage: '测试模型能力失败',
   })
-  return parseResponse<TestConnectionResult>(response)
 }

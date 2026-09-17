@@ -14,7 +14,7 @@ export interface Expression {
   chat_name?: string | null
   create_date: number | null
   checked: boolean
-  modified_by: 'ai' | 'user' | null  // 最后修改来源
+  modified_by: 'ai' | 'user' | null // 最后修改来源
 }
 
 /**
@@ -24,6 +24,7 @@ export interface ChatInfo {
   chat_id: string
   chat_name: string
   platform: string | null
+  account_id?: string | null
   is_group: boolean
   use_expression: boolean
   enable_learning: boolean
@@ -48,6 +49,42 @@ export interface ExpressionGroupInfo {
 export interface ExpressionGroupListResponse {
   success: boolean
   data: ExpressionGroupInfo[]
+}
+
+export interface ExpressionClusterMember {
+  id: number
+  situation: string
+  style: string
+  count: number
+  chat_id?: string | null
+  chat_name?: string | null
+  checked: boolean
+  modified_by: 'ai' | 'user' | null
+}
+
+export interface ExpressionClusterSummary {
+  embedding_profile_marker: string
+  cluster_id: number
+  size: number
+  members: ExpressionClusterMember[]
+}
+
+export interface ExpressionClusterListResponse {
+  success: boolean
+  index_exists: boolean
+  index_path: string
+  generated_at: string | null
+  updated_at: string | null
+  embedding_model: string | null
+  embedding_dimension: number | null
+  sample_count: number
+  clusters: ExpressionClusterSummary[]
+}
+
+export interface ExpressionClusterMemberListResponse {
+  success: boolean
+  cluster: ExpressionClusterSummary | null
+  data: ExpressionClusterMember[]
 }
 
 export interface ExpressionExportItem {
@@ -100,6 +137,7 @@ export interface LegacyExpressionGroupPreview {
 export interface LegacyExpressionMatchOption {
   session_id: string
   chat_name: string
+  account_id?: string | null
 }
 
 export interface LegacyExpressionImportPreviewResponse {

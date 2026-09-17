@@ -19,6 +19,7 @@ import {
   getMemoryEpisodeStatus,
   processMemoryEpisodePending,
   rebuildMemoryEpisodes,
+  type MemoryEpisodeActionPayload,
   type MemoryEpisodeDetailPayload,
   type MemoryEpisodeItemPayload,
   type MemoryEpisodeParagraphPayload,
@@ -54,12 +55,43 @@ function parseOptionalNumber(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function parsePositiveInt(value: string, fallback: number): number {
+function parsePositiveInt(value: string, maximum?: number): number | undefined {
   const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    return fallback
+  if (!Number.isInteger(parsed) || parsed <= 0 || (maximum !== undefined && parsed > maximum)) {
+    return undefined
   }
   return parsed
+}
+
+function formatEpisodeIssueReason(reason: string): string {
+  const labels: Record<string, string> = {
+    superseded: '来源版本已更新',
+    lease_lost_or_claim_mismatch: '任务租约已失效或被其他进程接管',
+    not_claimed: '本轮未领取到该来源任务',
+  }
+  return labels[reason] ?? reason
+}
+
+function getEpisodeActionDescription(payload: MemoryEpisodeActionPayload): string {
+  if (payload.detail) {
+    return payload.detail
+  }
+  if (payload.error) {
+    return payload.error
+  }
+  const firstIssue = payload.failures?.[0] ?? payload.unfinished_items?.[0]
+  const issueReason = firstIssue?.error ?? firstIssue?.reason
+  if (issueReason) {
+    const source = firstIssue?.source ? `${firstIssue.source}: ` : ''
+    return `${source}${formatEpisodeIssueReason(issueReason)}`
+  }
+  if (!payload.success) {
+    return `失败 ${payload.failed ?? 0} 项，未完成 ${payload.unfinished ?? 0} 项`
+  }
+  if (payload.rebuilt !== undefined) {
+    return `已重建 ${payload.rebuilt} 个来源`
+  }
+  return `已处理 ${payload.processed ?? 0} 项`
 }
 
 function getEpisodeId(item: MemoryEpisodeItemPayload | null | undefined): string {
@@ -129,13 +161,14 @@ export function MemoryEpisodeManager({
   const initialLoadedRef = useRef(false)
   const initialTargetKeyRef = useRef('')
   const pendingInitialTargetRef = useRef<{ source: string; timeStart: string; timeEnd: string } | null>(null)
+  const detailRequestIdRef = useRef(0)
 
   const selectedEpisode = useMemo(() => detail?.episode ?? items.find((item) => getEpisodeId(item) === selectedId), [detail?.episode, items, selectedId])
   const selectedEpisodeParagraphs = useMemo(() => getEpisodeParagraphs(selectedEpisode), [selectedEpisode])
   const failedItems = Array.isArray(status?.failed) ? status.failed : []
 
   const loadStatus = useCallback(async () => {
-    const payload = await getMemoryEpisodeStatus(parsePositiveInt(limit, 20))
+    const payload = await getMemoryEpisodeStatus(parsePositiveInt(limit) ?? 20)
     setStatus(payload)
   }, [limit])
 
@@ -150,7 +183,7 @@ export function MemoryEpisodeManager({
           platform: platform.trim(),
           userId: userId.trim(),
           personId: directPersonId,
-          limit: parsePositiveInt(limit, 20),
+          limit: parsePositiveInt(limit) ?? 20,
           timeStart: parseOptionalNumber(timeStart),
           timeEnd: parseOptionalNumber(timeEnd),
         }),
@@ -158,8 +191,8 @@ export function MemoryEpisodeManager({
       ])
       const nextItems = listPayload.items ?? []
       setItems(nextItems)
-      if (!selectedId && nextItems.length > 0) {
-        setSelectedId(getEpisodeId(nextItems[0]))
+      if (nextItems.length > 0) {
+        setSelectedId((current) => current || getEpisodeId(nextItems[0]))
       }
     } catch (error) {
       toast({
@@ -170,25 +203,34 @@ export function MemoryEpisodeManager({
     } finally {
       setLoading(false)
     }
-  }, [limit, loadStatus, personId, platform, query, selectedId, showAdvancedPersonId, source, timeEnd, timeStart, toast, userId])
+  }, [limit, loadStatus, personId, platform, query, showAdvancedPersonId, source, timeEnd, timeStart, toast, userId])
 
   const loadDetail = useCallback(async (episodeId: string) => {
+    const requestId = detailRequestIdRef.current + 1
+    detailRequestIdRef.current = requestId
     if (!episodeId) {
       setDetail(null)
       return
     }
+    setDetail(null)
     setDetailLoading(true)
     try {
       const payload = await getMemoryEpisode(episodeId)
-      setDetail(payload)
+      if (detailRequestIdRef.current === requestId) {
+        setDetail(payload)
+      }
     } catch (error) {
-      toast({
-        title: '加载 Episode 详情失败',
-        description: error instanceof Error ? error.message : String(error),
-        variant: 'destructive',
-      })
+      if (detailRequestIdRef.current === requestId) {
+        toast({
+          title: '加载 Episode 详情失败',
+          description: error instanceof Error ? error.message : String(error),
+          variant: 'destructive',
+        })
+      }
     } finally {
-      setDetailLoading(false)
+      if (detailRequestIdRef.current === requestId) {
+        setDetailLoading(false)
+      }
     }
   }, [toast])
 
@@ -269,7 +311,7 @@ export function MemoryEpisodeManager({
       })
       toast({
         title: payload.success ? 'Episode 重建已提交' : 'Episode 重建失败',
-        description: String(payload.detail ?? payload.error ?? `影响来源 ${payload.rebuilt ?? 0} 个`),
+        description: getEpisodeActionDescription(payload),
         variant: payload.success ? 'default' : 'destructive',
       })
       await loadEpisodes()
@@ -285,21 +327,32 @@ export function MemoryEpisodeManager({
   }, [loadEpisodes, rebuildAll, rebuildSource, rebuildSources, toast])
 
   const submitProcessPending = useCallback(async () => {
+    const limit = parsePositiveInt(pendingLimit, 200)
+    const maxAttempts = parsePositiveInt(pendingMaxRetry, 20)
+    if (limit === undefined || maxAttempts === undefined) {
+      toast({
+        title: '处理参数无效',
+        description: '本次处理上限必须是1至200的整数，最大尝试次数必须是1至20的整数。',
+        variant: 'destructive',
+      })
+      return
+    }
+
     setActionLoading(true)
     try {
       const payload = await processMemoryEpisodePending({
-        limit: parsePositiveInt(pendingLimit, 20),
-        max_retry: parsePositiveInt(pendingMaxRetry, 3),
+        limit,
+        max_retry: maxAttempts,
       })
       toast({
-        title: payload.success ? '已处理待生成 Episode' : '处理待生成 Episode 失败',
-        description: String(payload.detail ?? payload.error ?? `已处理 ${payload.processed ?? 0} 项`),
+        title: payload.success ? '已处理来源重建任务' : '处理来源重建任务失败',
+        description: getEpisodeActionDescription(payload),
         variant: payload.success ? 'default' : 'destructive',
       })
       await loadEpisodes()
     } catch (error) {
       toast({
-        title: '处理待生成 Episode 失败',
+        title: '处理来源重建任务失败',
         description: error instanceof Error ? error.message : String(error),
         variant: 'destructive',
       })
@@ -312,10 +365,10 @@ export function MemoryEpisodeManager({
     <div className="space-y-4">
       <div className="grid gap-4 xl:grid-cols-4">
         {[
-          { label: '待处理队列', value: Number(status?.pending_queue ?? 0) },
           { label: '待重建', value: getStatusCount(status, 'pending') },
           { label: '运行中', value: getStatusCount(status, 'running') },
-          { label: '失败来源', value: failedItems.length || getStatusCount(status, 'failed') },
+          { label: '已完成', value: getStatusCount(status, 'done') },
+          { label: '失败来源', value: getStatusCount(status, 'failed') || failedItems.length },
         ].map((item) => (
           <Card key={item.label}>
             <CardHeader className="pb-3">
@@ -395,7 +448,7 @@ export function MemoryEpisodeManager({
               刷新 Episode
             </Button>
 
-            <ScrollArea className="h-[420px] rounded-lg border">
+            <ScrollArea className="h-[420px]">
               <Table>
                 <TableHeader className="sticky top-0 bg-background">
                   <TableRow>
@@ -553,23 +606,39 @@ export function MemoryEpisodeManager({
 
               <div className="space-y-3 rounded-lg border bg-muted/10 p-3">
                 <div>
-                  <div className="text-sm font-medium">处理待生成任务</div>
+                  <div className="text-sm font-medium">处理来源重建任务</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    适用于后台已有待生成段落时，手动推进这些段落生成 Episode。
+                    适用于后台已有待重建来源时，手动推进这些来源生成 Episode。
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end">
                   <div className="space-y-2">
                     <Label htmlFor="episode-pending-limit">本次处理上限</Label>
-                    <Input id="episode-pending-limit" type="number" value={pendingLimit} onChange={(event) => setPendingLimit(event.target.value)} />
+                    <Input
+                      id="episode-pending-limit"
+                      type="number"
+                      min={1}
+                      max={200}
+                      step={1}
+                      value={pendingLimit}
+                      onChange={(event) => setPendingLimit(event.target.value)}
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="episode-pending-retry">失败重试上限</Label>
-                    <Input id="episode-pending-retry" type="number" value={pendingMaxRetry} onChange={(event) => setPendingMaxRetry(event.target.value)} />
+                    <Label htmlFor="episode-pending-retry">最大尝试次数（含首次）</Label>
+                    <Input
+                      id="episode-pending-retry"
+                      type="number"
+                      min={1}
+                      max={20}
+                      step={1}
+                      value={pendingMaxRetry}
+                      onChange={(event) => setPendingMaxRetry(event.target.value)}
+                    />
                   </div>
                   <Button variant="outline" onClick={() => void submitProcessPending()} disabled={actionLoading}>
                     <Play className="mr-2 h-4 w-4" />
-                    处理待生成任务
+                    处理来源重建任务
                   </Button>
                 </div>
               </div>

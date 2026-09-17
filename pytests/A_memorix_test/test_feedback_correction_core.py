@@ -9,14 +9,14 @@ IMPORT_ERROR: str | None = None
 
 try:
     from src.A_memorix.core.retrieval.sparse_bm25 import SparseBM25Config, SparseBM25Index
-    from src.A_memorix.core.runtime import sdk_memory_kernel as kernel_module
     from src.A_memorix.core.runtime.sdk_memory_kernel import SDKMemoryKernel
+    from src.A_memorix.core.utils import feedback_policy
 except SystemExit as exc:
     IMPORT_ERROR = f"config initialization exited during import: {exc}"
     SparseBM25Config = None  # type: ignore[assignment]
     SparseBM25Index = None  # type: ignore[assignment]
-    kernel_module = None  # type: ignore[assignment]
     SDKMemoryKernel = None  # type: ignore[assignment]
+    feedback_policy = None  # type: ignore[assignment]
 
 
 pytestmark = pytest.mark.skipif(IMPORT_ERROR is not None, reason=IMPORT_ERROR or "")
@@ -38,13 +38,11 @@ async def test_kernel_enqueue_feedback_task_delegates_to_metadata_store(monkeypa
         }
 
     monkeypatch.setattr(
-        kernel_module,
-        "global_config",
-        SimpleNamespace(
-            memory=SimpleNamespace(
-                feedback_correction_enabled=True,
-                feedback_correction_window_hours=12.0,
-            )
+        feedback_policy,
+        "_integration_config",
+        lambda: SimpleNamespace(
+            feedback_correction_enabled=True,
+            feedback_correction_window_hours=12.0,
         ),
     )
 
@@ -71,9 +69,9 @@ async def test_kernel_enqueue_feedback_task_delegates_to_metadata_store(monkeypa
 @pytest.mark.asyncio
 async def test_kernel_enqueue_feedback_task_skipped_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        kernel_module,
-        "global_config",
-        SimpleNamespace(memory=SimpleNamespace(feedback_correction_enabled=False)),
+        feedback_policy,
+        "_integration_config",
+        lambda: SimpleNamespace(feedback_correction_enabled=False),
     )
 
     kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
@@ -91,51 +89,61 @@ async def test_kernel_enqueue_feedback_task_skipped_when_disabled(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_apply_feedback_decision_resolves_paragraph_targets() -> None:
+async def test_apply_feedback_decision_resolves_paragraph_targets(monkeypatch: pytest.MonkeyPatch) -> None:
     action_logs: list[Dict[str, Any]] = []
     forgotten_hashes: list[str] = []
     ingested_payloads: list[Dict[str, Any]] = []
     stale_marks: list[Dict[str, Any]] = []
+    paragraph_lookup_calls: list[list[str]] = []
     episode_sources: list[str] = []
     profile_refresh_ids: list[str] = []
 
     kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
+    monkeypatch.setattr(
+        feedback_policy,
+        "_integration_config",
+        lambda: SimpleNamespace(
+            feedback_correction_auto_apply_threshold=0.85,
+            feedback_correction_paragraph_mark_enabled=True,
+            feedback_correction_episode_rebuild_enabled=True,
+            feedback_correction_profile_refresh_enabled=True,
+        ),
+    )
     kernel.metadata_store = SimpleNamespace(
-        get_paragraph_relations=lambda paragraph_hash: [
-            {
-                "hash": "relation-1",
-                "subject": "测试用户",
-                "predicate": "最喜欢的颜色是",
-                "object": "蓝色",
-            }
-        ]
-        if paragraph_hash == "paragraph-1"
-        else [],
+        get_paragraph_relations=lambda paragraph_hash: (
+            [
+                {
+                    "hash": "relation-1",
+                    "subject": "测试用户",
+                    "predicate": "最喜欢的颜色是",
+                    "object": "蓝色",
+                }
+            ]
+            if paragraph_hash == "paragraph-1"
+            else []
+        ),
         get_relation_status_batch=lambda hashes: {
-            str(hash_value): {"is_inactive": str(hash_value) in forgotten_hashes}
-            for hash_value in hashes
+            str(hash_value): {"is_inactive": str(hash_value) in forgotten_hashes} for hash_value in hashes
         },
-        get_paragraph_hashes_by_relation_hashes=lambda hashes: {
-            "relation-1": ["paragraph-1"]
-        }
-        if "relation-1" in hashes
-        else {},
+        get_paragraph_hashes_by_relation_hashes=lambda hashes: (
+            paragraph_lookup_calls.append(list(hashes))
+            or ({"relation-1": ["paragraph-1"]} if "relation-1" in hashes else {})
+        ),
+        get_paragraph_stale_relation_mark=lambda **kwargs: None,
         upsert_paragraph_stale_relation_mark=lambda **kwargs: stale_marks.append(kwargs) or kwargs,
         enqueue_episode_source_rebuild=lambda source, reason="": episode_sources.append(source) or True,
         enqueue_person_profile_refresh=lambda **kwargs: profile_refresh_ids.append(kwargs["person_id"]) or kwargs,
-        get_paragraph=lambda paragraph_hash: {"hash": "paragraph-1", "source": "chat_feedback_test_seed:session-1"}
-        if paragraph_hash == "paragraph-1"
-        else None,
+        get_paragraph=lambda paragraph_hash: (
+            {"hash": "paragraph-1", "source": "chat_feedback_test_seed:session-1"}
+            if paragraph_hash == "paragraph-1"
+            else None
+        ),
         append_feedback_action_log=lambda **kwargs: action_logs.append(kwargs),
     )
-    kernel._feedback_cfg_auto_apply_threshold = lambda: 0.85  # type: ignore[method-assign]
     kernel._apply_v5_relation_action = lambda *, action, hashes, strength=1.0: (  # type: ignore[method-assign]
         forgotten_hashes.extend([str(item) for item in hashes]),
         {"success": True, "action": action, "hashes": list(hashes), "strength": strength},
     )[1]
-    kernel._feedback_cfg_paragraph_mark_enabled = lambda: True  # type: ignore[method-assign]
-    kernel._feedback_cfg_episode_rebuild_enabled = lambda: True  # type: ignore[method-assign]
-    kernel._feedback_cfg_profile_refresh_enabled = lambda: True  # type: ignore[method-assign]
     kernel._resolve_feedback_related_person_ids = lambda **kwargs: ["person-1"]  # type: ignore[method-assign]
     kernel._query_relation_rows_by_hashes = lambda relation_hashes, include_inactive=False: [  # type: ignore[method-assign]
         {
@@ -189,6 +197,7 @@ async def test_apply_feedback_decision_resolves_paragraph_targets() -> None:
     assert "chat_summary:session-1" in payload["episode_rebuild_sources"]
     assert payload["profile_refresh_person_ids"] == ["person-1"]
     assert stale_marks[0]["paragraph_hash"] == "paragraph-1"
+    assert paragraph_lookup_calls == [["relation-1"]]
     assert {item["action_type"] for item in action_logs} == {
         "forget_relation",
         "ingest_correction",
@@ -198,9 +207,13 @@ async def test_apply_feedback_decision_resolves_paragraph_targets() -> None:
     }
 
 
-def test_filter_active_relation_hits_removes_inactive_relations() -> None:
+def test_filter_active_relation_hits_removes_inactive_relations(monkeypatch: pytest.MonkeyPatch) -> None:
     kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
-    kernel._feedback_cfg_paragraph_hard_filter_enabled = lambda: True  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        feedback_policy,
+        "_integration_config",
+        lambda: SimpleNamespace(feedback_correction_paragraph_hard_filter_enabled=True),
+    )
     kernel.metadata_store = SimpleNamespace(
         get_relation_status_batch=lambda hashes: {
             "r-active": {"is_inactive": False},
@@ -261,8 +274,22 @@ async def test_feedback_task_rollback_restores_snapshots_and_requeues_followups(
     deleted_marks: list[tuple[str, str]] = []
     deleted_paragraphs: list[str] = []
     relation_statuses: Dict[str, Dict[str, Any]] = {
-        "rel-old": {"is_inactive": True, "weight": 0.0, "is_pinned": False, "protected_until": 0.0, "last_reinforced": None, "inactive_since": 1.0},
-        "rel-new": {"is_inactive": False, "weight": 1.0, "is_pinned": False, "protected_until": 0.0, "last_reinforced": None, "inactive_since": None},
+        "rel-old": {
+            "is_inactive": True,
+            "weight": 0.0,
+            "is_pinned": False,
+            "protected_until": 0.0,
+            "last_reinforced": None,
+            "inactive_since": 1.0,
+        },
+        "rel-new": {
+            "is_inactive": False,
+            "weight": 1.0,
+            "is_pinned": False,
+            "protected_until": 0.0,
+            "last_reinforced": None,
+            "inactive_since": None,
+        },
     }
     current_task: Dict[str, Any] = {
         "id": 1,
@@ -320,31 +347,34 @@ async def test_feedback_task_rollback_restores_snapshots_and_requeues_followups(
 
     metadata_store = SimpleNamespace(
         get_feedback_task_by_id=lambda task_id: current_task if int(task_id) == 1 else None,
-        mark_feedback_task_rollback_running=lambda **kwargs: current_task.update({"rollback_status": "running"}) or current_task,
-        finalize_feedback_task_rollback=lambda **kwargs: current_task.update(
-            {
-                "rollback_status": kwargs["rollback_status"],
-                "rollback_result": kwargs.get("rollback_result") or {},
-                "rollback_error": kwargs.get("rollback_error", ""),
-            }
-        )
-        or current_task,
+        mark_feedback_task_rollback_running=lambda **kwargs: (
+            current_task.update({"rollback_status": "running"}) or current_task
+        ),
+        finalize_feedback_task_rollback=lambda **kwargs: (
+            current_task.update(
+                {
+                    "rollback_status": kwargs["rollback_status"],
+                    "rollback_result": kwargs.get("rollback_result") or {},
+                    "rollback_error": kwargs.get("rollback_error", ""),
+                }
+            )
+            or current_task
+        ),
         get_relation_status_batch=lambda hashes: {
-            hash_value: dict(relation_statuses[hash_value])
-            for hash_value in hashes
-            if hash_value in relation_statuses
+            hash_value: dict(relation_statuses[hash_value]) for hash_value in hashes if hash_value in relation_statuses
         },
-        restore_relation_status_from_snapshot=lambda hash_value, snapshot: relation_statuses.update(
-            {hash_value: dict(snapshot)}
-        )
-        or dict(snapshot),
+        restore_relation_status_from_snapshot=lambda hash_value, snapshot: (
+            relation_statuses.update({hash_value: dict(snapshot)}) or dict(snapshot)
+        ),
         append_feedback_action_log=lambda **kwargs: action_logs.append(kwargs),
         mark_as_deleted=lambda hashes, type_: deleted_paragraphs.extend(list(hashes)) or len(list(hashes)),
         get_paragraph=lambda paragraph_hash: {"hash": paragraph_hash, "source": "chat_summary:session-1"},
         get_connection=lambda: _Conn(),
+        list_external_memory_refs_by_paragraphs=lambda hashes: [
+            {"paragraph_hash": str(hash_value), "external_id": f"external:{hash_value}"} for hash_value in hashes
+        ],
         delete_external_memory_refs_by_paragraphs=lambda hashes: [
-            {"paragraph_hash": str(hash_value), "external_id": f"external:{hash_value}"}
-            for hash_value in hashes
+            {"paragraph_hash": str(hash_value), "external_id": f"external:{hash_value}"} for hash_value in hashes
         ],
         update_relations_protection=lambda hashes, **kwargs: None,
         mark_relations_inactive=lambda hashes, inactive_since=None: [
@@ -358,19 +388,38 @@ async def test_feedback_task_rollback_restores_snapshots_and_requeues_followups(
             )
             for hash_value in hashes
         ],
-        delete_paragraph_stale_relation_marks=lambda marks: deleted_marks.extend(list(marks)) or len(list(marks)),
-        enqueue_episode_source_rebuild=lambda source, reason='': queued_sources.append(source) or True,
+        rollback_paragraph_stale_relation_mark=lambda **kwargs: (
+            deleted_marks.append((kwargs["paragraph_hash"], kwargs["relation_hash"]))
+            or {
+                "success": True,
+                "action": "deleted",
+                "paragraph_hash": kwargs["paragraph_hash"],
+                "relation_hash": kwargs["relation_hash"],
+            }
+        ),
+        enqueue_episode_source_rebuild=lambda source, reason="": queued_sources.append(source) or True,
         enqueue_person_profile_refresh=lambda **kwargs: queued_profiles.append(kwargs["person_id"]) or kwargs,
         list_feedback_action_logs=lambda task_id: action_logs if int(task_id) == 1 else [],
     )
 
     kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
     kernel.metadata_store = metadata_store
+
     async def _noop_initialize() -> None:
         return None
+
     kernel.initialize = _noop_initialize  # type: ignore[method-assign]
     kernel._rebuild_graph_from_metadata = lambda: None  # type: ignore[method-assign]
     kernel._persist = lambda: None  # type: ignore[method-assign]
+
+    async def _delete_correction_paragraphs(**kwargs: Any) -> Dict[str, Any]:
+        hashes = list((kwargs.get("selector") or {}).get("hashes") or [])
+        deleted_paragraphs.extend(hashes)
+        return {"success": True, "operation_id": "feedback-delete-op"}
+
+    kernel._delete_admin_service = SimpleNamespace(  # type: ignore[assignment]
+        _execute_delete_action=_delete_correction_paragraphs
+    )
 
     payload = await kernel._rollback_feedback_task(
         task_id=1,
@@ -394,3 +443,146 @@ async def test_feedback_task_rollback_restores_snapshots_and_requeues_followups(
         "rollback_enqueue_episode_rebuild",
         "rollback_enqueue_profile_refresh",
     }
+
+
+def test_fuzzy_modify_candidate_filter_blocks_protected_relation() -> None:
+    kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
+    kernel.metadata_store = SimpleNamespace(
+        get_relation=lambda hash_value, include_inactive=True: {"hash": hash_value},
+        get_relation_status_batch=lambda hashes: {
+            hashes[0]: {
+                "is_inactive": False,
+                "is_pinned": True,
+                "protected_until": 0.0,
+            }
+        },
+    )
+
+    candidate = {"target_type": "relation", "hash": "relation-1"}
+    assert kernel._is_fuzzy_modify_candidate_mutable(candidate, {"deletable": True}) is False
+
+
+def test_fuzzy_modify_plan_logs_candidate_miss(caplog: pytest.LogCaptureFixture) -> None:
+    kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
+
+    with caplog.at_level("WARNING"):
+        plan = kernel._normalize_fuzzy_modify_plan(
+            {
+                "confidence": 0.9,
+                "operations": [
+                    {
+                        "action": "mark_superseded",
+                        "candidate_id": "paragraph:missing",
+                        "hash": "missing",
+                    }
+                ],
+            },
+            request_text="修正记忆",
+            scope="person_profile",
+            person_id="person-1",
+            chat_id="",
+            candidates=[{"candidate_id": "paragraph:known", "target_type": "paragraph", "hash": "known"}],
+        )
+
+    assert plan["operations"] == []
+    assert "候选集外" in caplog.text
+
+
+def test_fuzzy_modify_superseded_change_type_matches_operation() -> None:
+    previous_metadata = {"source_type": "person_fact"}
+    updated_metadata: dict[str, Any] = {}
+    kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
+    kernel.metadata_store = SimpleNamespace(
+        get_paragraph=lambda hash_value: {"hash": hash_value, "metadata": previous_metadata},
+        update_paragraph_metadata=lambda hash_value, patch, merge=True: (
+            updated_metadata.update(patch) or {**previous_metadata, **updated_metadata}
+        ),
+        get_paragraph_relations=lambda paragraph_hash: [],
+        get_paragraph_entities=lambda paragraph_hash: [],
+        get_relation_status_batch=lambda hashes: {},
+        list_active_image_memory_link_ids=lambda **kwargs: [],
+        invalidate_image_memory_links=lambda **kwargs: 0,
+        detach_fact_evidence_for_paragraphs=lambda hashes, **kwargs: {
+            "paragraph_hashes": list(hashes),
+            "evidence": [],
+            "transitions": [],
+        },
+    )
+
+    result = kernel._mark_fuzzy_modify_target_superseded(
+        operation={"target_type": "paragraph", "hash": "paragraph-1"},
+        change_id="fuzzy-1",
+        changed_at=1000.0,
+        changed_by="pytest",
+        replacement_hashes=["new-paragraph"],
+        plan_id="fuzzy-1",
+    )
+
+    assert result["updated_metadata"]["memory_change"]["change_type"] == "mark_superseded"
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_modify_execute_recovers_stale_executing_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan_updates: list[dict[str, Any]] = []
+    kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
+    kernel.metadata_store = SimpleNamespace(
+        get_fuzzy_modify_plan=lambda plan_id: {
+            "plan_id": plan_id,
+            "status": "executing",
+            "confidence": 1.0,
+            "execution": {"attempt": {"status": "executing", "started_at": 1.0}},
+            "plan": {"operations": []},
+        },
+        claim_fuzzy_modify_plan=lambda plan_id: {
+            "plan_id": plan_id,
+            "status": "executing",
+            "confidence": 1.0,
+            "execution": {"attempt": {"status": "executing", "started_at": 1.0}},
+            "plan": {"operations": []},
+        },
+        update_fuzzy_modify_plan=lambda plan_id, **kwargs: (
+            plan_updates.append({"plan_id": plan_id, **kwargs}) or {"plan_id": plan_id, **kwargs}
+        ),
+    )
+
+    async def fake_apply(**kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "stored_ids": ["new-hash"]}
+
+    monkeypatch.setattr(kernel, "_apply_fuzzy_modify_plan", fake_apply)
+    result = await kernel._execute_fuzzy_modify_action(plan_id="fuzzy-1", confirmed=True, requested_by="pytest")
+
+    assert result["success"] is True
+    assert plan_updates[0]["status"] == "executing"
+    assert plan_updates[0]["execution"]["attempt"]["recovered_from_stale_executing"] is True
+    assert plan_updates[-1]["status"] == "executed"
+    assert plan_updates[-1]["execution"]["attempt"]["status"] == "finished"
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_modify_rollback_reports_delete_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan_updates: list[dict[str, Any]] = []
+    kernel = SDKMemoryKernel(plugin_root=Path("."), config={})
+    kernel.metadata_store = SimpleNamespace(
+        get_fuzzy_modify_plan=lambda plan_id: {
+            "plan_id": plan_id,
+            "status": "executed",
+            "execution": {"stored_ids": ["paragraph-1"]},
+        },
+        get_paragraph=lambda hash_value: {"hash": hash_value},
+        get_relation=lambda hash_value: None,
+        update_fuzzy_modify_plan=lambda plan_id, **kwargs: (
+            plan_updates.append({"plan_id": plan_id, **kwargs}) or {"plan_id": plan_id, **kwargs}
+        ),
+    )
+
+    async def fake_execute_delete_action(**kwargs):
+        return {"success": False, "error": "delete failed"}
+
+    monkeypatch.setattr(kernel, "_execute_delete_action", fake_execute_delete_action)
+
+    result = await kernel._rollback_fuzzy_modify_action(plan_id="fuzzy-1", requested_by="pytest")
+
+    assert result["success"] is False
+    assert result["rollback"]["success"] is False
+    assert result["error"] == "delete failed"
+    assert plan_updates[-1]["status"] == "rollback_failed"

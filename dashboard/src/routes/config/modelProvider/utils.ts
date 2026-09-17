@@ -6,6 +6,7 @@ import type { APIProvider } from './types'
  */
 export const cleanProviderData = (provider: APIProvider): APIProvider => ({
   ...provider,
+  default_headers: provider.default_headers ?? {},
   max_retry: provider.max_retry ?? 2,
   timeout: provider.timeout ?? 30,
   retry_interval: provider.retry_interval ?? 10,
@@ -26,7 +27,7 @@ export const validateProvider = (
   errors: { name?: string; base_url?: string; api_key?: string }
 } => {
   const errors: { name?: string; base_url?: string; api_key?: string } = {}
-  
+
   if (!provider) {
     return { isValid: false, errors: { name: '提供商数据为空' } }
   }
@@ -46,7 +47,7 @@ export const validateProvider = (
       errors.name = '提供商名称已存在，请使用其他名称'
     }
   }
-  
+
   if (!provider.base_url?.trim()) {
     errors.base_url = '请输入基础 URL'
   }

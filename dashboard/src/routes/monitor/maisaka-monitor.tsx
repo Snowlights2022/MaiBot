@@ -4,6 +4,8 @@
  * 通过 WebSocket 实时接收 MaiSaka 推理引擎事件，
  * 以时间线形式展示聊天流的推理过程。
  */
+import { useNavigate } from '@tanstack/react-router'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   Activity,
   AlertCircle,
@@ -12,33 +14,42 @@ import {
   Brain,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
-  CircleDot,
+  ChevronUp,
   Clock,
   Eraser,
-  ExternalLink,
-  Gauge,
-  MessageSquare,
+  FileCode2,
+  Globe2,
+  ImageIcon,
+  ImageOff,
+  Loader2,
   PauseCircle,
-  Radio,
   Timer,
   Wrench,
   XCircle,
-  Zap,
 } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useResolvedAvatarUrl, type AvatarTargetType } from '@/lib/avatar-url'
+import { useToast } from '@/hooks/use-toast'
+import { backendApi } from '@/lib/http'
 import { cn } from '@/lib/utils'
-import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type {
-  CycleEndEvent,
-  CycleStartEvent,
+  MaisakaContextSection,
+  MaisakaMessageMedia,
   MaisakaToolCall,
   MessageIngestedEvent,
+  MaisakaReplyPreview,
   MessageSentEvent,
   PlannerFinalizedEvent,
   PlannerResponseEvent,
@@ -50,6 +61,8 @@ import type { SessionInfo, StageStatusInfo, TimelineEntry } from './use-maisaka-
 import { useMaisakaMonitor } from './use-maisaka-monitor'
 
 // ─── 工具函数 ──────────────────────────────────────────────────
+
+type TimelineScrollBehavior = 'auto' | 'smooth'
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`
@@ -76,6 +89,135 @@ function formatRelativeTime(ts: number): string {
   return `${Math.round(diff / 3600)}小时前`
 }
 
+function getToolCallSourceLabel(source?: string, fallbackLabel?: string): string {
+  const normalizedSource = (source ?? '').trim().toLowerCase()
+  if (normalizedSource === 'reasoning') return '推理中调用'
+  if (normalizedSource === 'response') return '正文调用'
+  return fallbackLabel?.trim() || ''
+}
+
+function getToolCallSourceBadgeClassName(source?: string): string {
+  const normalizedSource = (source ?? '').trim().toLowerCase()
+  if (normalizedSource === 'reasoning') {
+    return 'border-teal-500/45 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+  }
+  if (normalizedSource === 'response') {
+    return 'border-amber-500/45 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+  }
+  return 'border-muted-foreground/30 bg-muted/40 text-muted-foreground'
+}
+
+function getFallbackInitial(label: string, fallback: string) {
+  const normalizedLabel = label.trim()
+  if (normalizedLabel) return normalizedLabel.slice(0, 1)
+  return fallback
+}
+
+function getSessionInitial(session: SessionInfo) {
+  return getFallbackInitial(session.sessionName, session.isGroupChat ? '群' : '私')
+}
+
+function isWaitingForMessage(status: StageStatusInfo) {
+  return (
+    status.stage === '等待消息' ||
+    status.detail.includes('等待消息') ||
+    status.agentState === 'wait'
+  )
+}
+
+function getAgentStateLabel(agentState: string): string | null {
+  const normalizedState = agentState.trim().toLowerCase()
+  if (!normalizedState || normalizedState === 'stop') return null
+  if (normalizedState === 'running') return '运行中'
+  if (normalizedState === 'wait') return '等待中'
+  return agentState
+}
+
+function MonitorAvatar({
+  className,
+  fallback,
+  fallbackClassName,
+  label,
+  platform,
+  targetId,
+  targetType,
+}: {
+  className?: string
+  fallback: ReactNode
+  fallbackClassName?: string
+  label: string
+  platform?: string | null
+  targetId?: string | null
+  targetType: AvatarTargetType
+}) {
+  const avatarUrl = useResolvedAvatarUrl(platform, targetId, targetType)
+
+  return (
+    <Avatar className={cn('ring-border/60 shrink-0 ring-1', className)}>
+      {avatarUrl && (
+        <AvatarImage src={avatarUrl} alt={`${label} 的头像`} className="object-cover" />
+      )}
+      <AvatarFallback className={fallbackClassName}>{fallback}</AvatarFallback>
+    </Avatar>
+  )
+}
+
+function SessionAvatar({ session, status }: { session: SessionInfo; status?: StageStatusInfo }) {
+  const targetType: AvatarTargetType = session.isGroupChat ? 'group' : 'user'
+  const targetId = session.isGroupChat ? session.groupId : session.userId
+  const statusDotClassName =
+    status && isWaitingForMessage(status) ? 'bg-blue-500' : 'bg-emerald-500'
+
+  return (
+    <span className="relative flex h-7 w-7 shrink-0">
+      <MonitorAvatar
+        className="h-7 w-7 rounded-md"
+        fallback={getSessionInitial(session)}
+        fallbackClassName="rounded-md bg-primary/10 text-xs font-semibold text-primary"
+        label={session.sessionName}
+        platform={session.platform}
+        targetId={targetId}
+        targetType={targetType}
+      />
+      {status && (
+        <span
+          className={cn(
+            'ring-background absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full ring-2',
+            statusDotClassName
+          )}
+        />
+      )}
+    </span>
+  )
+}
+
+function MessageAvatar({
+  data,
+  kind,
+}: {
+  data: MessageIngestedEvent | MessageSentEvent
+  kind: 'ingested' | 'sent'
+}) {
+  const isSent = kind === 'sent'
+
+  return (
+    <MonitorAvatar
+      className="mt-1 h-7 w-7 rounded-full"
+      fallback={
+        isSent ? <Bot className="h-3.5 w-3.5" /> : getFallbackInitial(data.speaker_name, '人')
+      }
+      fallbackClassName={cn(
+        'text-xs font-semibold',
+        isSent ? 'bg-emerald-500/15 text-emerald-500' : 'bg-blue-500/15 text-blue-500'
+      )}
+      label={data.speaker_name || (isSent ? '麦麦' : '用户')}
+      platform={data.platform}
+      targetId={data.user_id}
+      targetType="user"
+    />
+  )
+}
+
 // ─── 会话侧边栏 ──────────────────────────────────────────────
 
 function SessionSidebar({
@@ -92,13 +234,8 @@ function SessionSidebar({
   collapsed: boolean
 }) {
   const sortedSessions = Array.from(sessions.values()).sort(
-    (a, b) => b.lastActivity - a.lastActivity,
+    (a, b) => b.lastActivity - a.lastActivity
   )
-  const getSessionInitial = (session: SessionInfo) => {
-    const name = session.sessionName.trim()
-    if (name) return name.slice(0, 1)
-    return session.isGroupChat ? '群' : '私'
-  }
 
   if (sortedSessions.length === 0) {
     if (collapsed) {
@@ -106,12 +243,14 @@ function SessionSidebar({
     }
 
     return (
-      <div className={cn(
-        'flex flex-col items-center justify-center h-full text-muted-foreground gap-2',
-        'p-4',
-      )}>
+      <div
+        className={cn(
+          'text-muted-foreground flex h-full flex-col items-center justify-center gap-2',
+          'p-4'
+        )}
+      >
         <Bot className="h-8 w-8 opacity-40" />
-        <p className="text-sm text-center">等待 MaiSaka 会话…</p>
+        <p className="text-center text-sm">等待 MaiSaka 会话…</p>
       </div>
     )
   }
@@ -121,42 +260,54 @@ function SessionSidebar({
       {sortedSessions.map((session) => {
         const status = stageStatuses.get(session.sessionId)
         return (
-        <button
-          key={session.sessionId}
-          onClick={() => onSelect(session.sessionId)}
-          title={session.sessionName}
-          className={cn(
-            'max-w-full overflow-hidden rounded-lg text-left text-sm transition-colors',
-            'hover:bg-accent/50',
-            collapsed
-              ? 'flex h-10 w-10 items-center justify-center p-0'
-              : 'flex w-full min-w-0 flex-col items-start gap-0.5 px-2.5 py-2',
-            selectedSession === session.sessionId && 'bg-accent text-accent-foreground',
-          )}
-        >
-          <div className={cn('flex w-full min-w-0 items-center', collapsed ? 'justify-center' : 'justify-between gap-2')}>
-            <div className={cn('flex min-w-0 items-center gap-2 overflow-hidden', !collapsed && 'flex-1')}>
-              <span className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-xs font-semibold text-primary">
-                {getSessionInitial(session)}
-                {status && (
-                  <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
+          <button
+            key={session.sessionId}
+            onClick={() => onSelect(session.sessionId)}
+            title={session.sessionName}
+            className={cn(
+              'max-w-full overflow-hidden rounded-lg text-left text-sm transition-colors',
+              'hover:bg-accent/50',
+              collapsed
+                ? 'flex h-10 w-10 items-center justify-center p-0'
+                : 'flex w-full min-w-0 flex-col items-start gap-0.5 px-2.5 py-2',
+              selectedSession === session.sessionId && 'bg-accent text-accent-foreground'
+            )}
+          >
+            <div
+              className={cn(
+                'flex w-full min-w-0 items-center',
+                collapsed ? 'justify-center' : 'justify-between gap-2'
+              )}
+            >
+              <div
+                className={cn(
+                  'flex min-w-0 items-center gap-2 overflow-hidden',
+                  !collapsed && 'flex-1'
                 )}
-              </span>
-              {!collapsed && <span className="block min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-medium" title={session.sessionName}>
-                {session.sessionName}
-              </span>}
+              >
+                <SessionAvatar session={session} status={status} />
+                {!collapsed && (
+                  <span
+                    className="block min-w-0 flex-1 overflow-hidden font-medium text-ellipsis whitespace-nowrap"
+                    title={session.sessionName}
+                  >
+                    {session.sessionName}
+                  </span>
+                )}
+              </div>
+              {!collapsed && (
+                <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
+                  {session.eventCount}
+                </Badge>
+              )}
             </div>
-            {!collapsed && <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
-              {session.eventCount}
-            </Badge>}
-          </div>
-          {!collapsed && (
-            <div className="flex w-full min-w-0 items-center justify-between gap-2 overflow-hidden text-xs text-muted-foreground">
-              <span className="shrink-0">{formatRelativeTime(session.lastActivity)}</span>
-              {status && <span className="min-w-0 truncate text-primary">{status.stage}</span>}
-            </div>
-          )}
-        </button>
+            {!collapsed && (
+              <div className="text-muted-foreground flex w-full min-w-0 items-center justify-between gap-2 overflow-hidden text-xs">
+                <span className="shrink-0">{formatRelativeTime(session.lastActivity)}</span>
+                {status && <span className="text-primary min-w-0 truncate">{status.stage}</span>}
+              </div>
+            )}
+          </button>
         )
       })}
     </div>
@@ -165,103 +316,551 @@ function SessionSidebar({
 
 // ─── 单条时间线事件渲染 ──────────────────────────────────────
 
-function StageStatusPanel({ status }: { status?: StageStatusInfo }) {
+/** 上下文分段：token 由该轮真实 prompt token 按字符占比换算 */
+interface MonitorContextSection {
+  key: string
+  tokens: number
+  percent: number
+}
+
+interface MonitorStats {
+  messages: number
+  cycles: number
+  toolCalls: number
+  /** 最近一轮 planner 请求的输入 token，即当前上下文占用 */
+  contextTokens: number
+  /** 与最近一轮 planner 请求对应的上下文分段 */
+  contextSections: MonitorContextSection[]
+  /** 会话累计 token 用量 */
+  totalPromptTokens: number
+  totalCompletionTokens: number
+  /** 会话累计缓存命中率，无缓存数据时为 null */
+  cacheHitRate: number | null
+}
+
+/** 上下文分段的展示标签与配色，未知分段直接以 key 展示 */
+const CONTEXT_SECTION_META: Record<string, { label: string; color: string }> = {
+  messages: { label: '消息', color: 'hsl(var(--color-chart-1))' },
+  mcp_tools: { label: 'MCP 工具', color: 'hsl(var(--color-chart-4))' },
+  builtin_tools: { label: '系统工具', color: 'hsl(var(--color-chart-2))' },
+  plugin_tools: { label: '插件工具', color: 'hsl(var(--primary))' },
+  system_prompt: { label: '系统提示词', color: 'hsl(var(--color-chart-5))' },
+  instant_notice: { label: '即时提示', color: 'hsl(var(--color-chart-3))' },
+  other_tools: { label: '其他工具', color: 'hsl(var(--muted-foreground))' },
+}
+
+function resolveContextSectionMeta(key: string) {
+  return CONTEXT_SECTION_META[key] ?? { label: key, color: 'hsl(var(--muted-foreground))' }
+}
+
+const STATS_TOKEN_FORMATTER = new Intl.NumberFormat('zh-CN', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+})
+
+function formatTokenCount(value: number): string {
+  return STATS_TOKEN_FORMATTER.format(Math.max(Math.round(value), 0))
+}
+
+/** 统计浮层内的单行指标 */
+function StatsRow({
+  children,
+  value,
+  valueClassName,
+}: {
+  children: ReactNode
+  value: ReactNode
+  valueClassName?: string
+}) {
+  return (
+    <div className="flex items-center gap-2 text-[11px] leading-5">
+      {children}
+      <span className={cn('ml-auto font-mono tabular-nums', valueClassName)}>{value}</span>
+    </div>
+  )
+}
+
+/**
+ * 统计浮层：展示最近一轮上下文构成、缓存命中率与会话累计计数。
+ *
+ * 上下文 token 总量取自模型返回的真实 prompt token，分段占比按后端统计的字符数换算。
+ */
+function MonitorStatsPanel({ stats }: { stats: MonitorStats }) {
+  const hasContext = stats.contextTokens > 0 && stats.contextSections.length > 0
+
+  return (
+    <div className="w-72 space-y-2">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-xs font-medium">上下文容量</span>
+        <span className="font-mono text-[11px] tabular-nums">
+          {stats.contextTokens > 0 ? `${formatTokenCount(stats.contextTokens)} tokens` : '暂无数据'}
+        </span>
+      </div>
+
+      {hasContext ? (
+        <>
+          <div className="bg-muted flex h-1.5 w-full overflow-hidden rounded-full">
+            {stats.contextSections.map((section) => (
+              <div
+                key={section.key}
+                className="h-full"
+                style={{
+                  width: `${section.percent}%`,
+                  backgroundColor: resolveContextSectionMeta(section.key).color,
+                }}
+              />
+            ))}
+          </div>
+          <div className="space-y-0.5">
+            {stats.contextSections.map((section) => {
+              const sectionMeta = resolveContextSectionMeta(section.key)
+              return (
+                <StatsRow
+                  key={section.key}
+                  value={formatTokenCount(section.tokens)}
+                  valueClassName="text-muted-foreground w-12 text-right"
+                >
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: sectionMeta.color }}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{sectionMeta.label}</span>
+                  <span className="text-muted-foreground w-11 text-right font-mono tabular-nums">
+                    {section.percent.toFixed(1)}%
+                  </span>
+                </StatsRow>
+              )
+            })}
+          </div>
+        </>
+      ) : (
+        <p className="text-muted-foreground text-[11px] leading-5">
+          尚无 planner 请求数据，产生一次推理后展示上下文构成。
+        </p>
+      )}
+
+      <Separator />
+
+      <div className="space-y-0.5">
+        <StatsRow
+          value={stats.cacheHitRate === null ? '—' : `${stats.cacheHitRate.toFixed(0)}%`}
+          valueClassName={stats.cacheHitRate === null ? 'text-muted-foreground' : ''}
+        >
+          <span className="text-muted-foreground">平均缓存命中率</span>
+        </StatsRow>
+        <StatsRow
+          value={`${formatTokenCount(stats.totalPromptTokens)} / ${formatTokenCount(stats.totalCompletionTokens)}`}
+        >
+          <span className="text-muted-foreground">累计输入 / 输出</span>
+        </StatsRow>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-0.5 text-[11px] leading-5">
+        <div>消息：{stats.messages}</div>
+        <div>循环：{stats.cycles}</div>
+        <div>工具调用：{stats.toolCalls}</div>
+      </div>
+    </div>
+  )
+}
+
+interface StageStatusPanelProps {
+  autoScroll: boolean
+  onClearTimeline: () => void
+  onFindPreviousBotMessage: () => void
+  onScrollToBottom: () => void
+  stats: MonitorStats
+  status?: StageStatusInfo
+}
+
+function MonitorStatusActions({
+  autoScroll,
+  onClearTimeline,
+  onFindPreviousBotMessage,
+  onScrollToBottom,
+  stats,
+}: Omit<StageStatusPanelProps, 'status'>) {
+  return (
+    <>
+      <TooltipProvider delayDuration={150}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div
+              className={cn(
+                'group bg-background/60 text-muted-foreground flex h-6 shrink-0 items-center gap-1 rounded-md border px-1.5 transition-[color,background-color,outline-color]',
+                // hover / 浮层展开时高亮：填充色、描边与文字色同用；部分主题会用 !important 固定
+                // 背景、文字、边框与阴影，此时由 outline 与图标色保证高亮仍然可见
+                'hover:bg-accent hover:outline-primary/50 hover:outline-2',
+                'data-[state=delayed-open]:bg-accent data-[state=delayed-open]:outline-primary/50 data-[state=delayed-open]:outline-2',
+                'data-[state=instant-open]:bg-accent data-[state=instant-open]:outline-primary/50 data-[state=instant-open]:outline-2'
+              )}
+            >
+              <Activity className="group-hover:text-primary h-3 w-3 transition-colors" />
+              <span className="group-hover:text-foreground text-[10px] font-medium transition-colors">
+                统计
+              </span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" align="start" className="p-3">
+            <MonitorStatsPanel stats={stats} />
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-[11px]"
+          onClick={onFindPreviousBotMessage}
+          title="查找上条麦麦消息"
+        >
+          <ChevronUp className="mr-1 h-3 w-3" />
+          查找上条
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-[11px]"
+          onClick={onScrollToBottom}
+          title="回到底部"
+        >
+          <ChevronDown className={cn('mr-1 h-3 w-3', autoScroll && 'text-primary')} />
+          回到底部
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6 shrink-0"
+          onClick={onClearTimeline}
+          title="清空"
+          aria-label="清空"
+        >
+          <Eraser className="h-3 w-3" />
+        </Button>
+      </div>
+    </>
+  )
+}
+
+function StageStatusPanel({
+  autoScroll,
+  onClearTimeline,
+  onFindPreviousBotMessage,
+  onScrollToBottom,
+  stats,
+  status,
+}: StageStatusPanelProps) {
+  const agentStateLabel = status ? getAgentStateLabel(status.agentState) : null
+  const actions = (
+    <MonitorStatusActions
+      autoScroll={autoScroll}
+      onClearTimeline={onClearTimeline}
+      onFindPreviousBotMessage={onFindPreviousBotMessage}
+      onScrollToBottom={onScrollToBottom}
+      stats={stats}
+    />
+  )
+
   if (!status) {
     return (
-      <div className="mb-3 rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-        当前聊天流暂无阶段状态
+      <div className="bg-muted/30 mb-1.5 flex min-w-0 items-center gap-2 overflow-x-auto rounded-md border px-2 py-1">
+        {actions}
+        <div className="text-muted-foreground shrink-0 text-xs whitespace-nowrap">
+          当前聊天流暂无阶段状态
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="mb-3 rounded-md border bg-background px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="default" className="gap-1">
-          <Activity className="h-3 w-3" />
+    <div className="bg-background mb-1.5 flex min-w-0 items-center gap-2 overflow-x-auto rounded-md border px-2 py-1">
+      {actions}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Badge variant="default" className="gap-1 px-1.5 text-[10px]">
+          <Activity className="h-2.5 w-2.5" />
           {status.stage || '未知阶段'}
         </Badge>
         {status.roundText && (
-          <Badge variant="secondary" className="text-[10px]">
+          <Badge variant="secondary" className="px-1.5 text-[10px]">
             {status.roundText}
           </Badge>
         )}
-        {status.agentState && (
-          <Badge variant={status.agentState === 'running' ? 'default' : 'outline'} className="text-[10px]">
-            {status.agentState}
+        {agentStateLabel && (
+          <Badge
+            variant={status.agentState === 'running' ? 'default' : 'outline'}
+            className="px-1.5 text-[10px]"
+          >
+            {agentStateLabel}
           </Badge>
         )}
-        <span className="ml-auto text-xs text-muted-foreground">
+        <span className="text-muted-foreground ml-auto text-[11px]">
           更新于 {formatRelativeTime(status.updatedAt)}
         </span>
       </div>
       {status.detail && (
-        <p className="mt-1 text-sm text-muted-foreground">{status.detail}</p>
+        <p className="text-muted-foreground shrink-0 text-xs whitespace-nowrap">{status.detail}</p>
       )}
     </div>
   )
 }
 
-function MessageIngestedCard({ data }: { data: MessageIngestedEvent }) {
+function ReplyPreviewBlock({
+  onJumpToMessage,
+  replyTo,
+}: {
+  onJumpToMessage?: (messageId: string) => void
+  replyTo?: MaisakaReplyPreview | null
+}) {
+  if (!replyTo) {
+    return null
+  }
+
+  const canJump = Boolean(replyTo.message_id && onJumpToMessage)
+  const className = cn(
+    'mb-1.5 block max-w-xl rounded-md bg-muted/70 px-2.5 py-1.5 text-left text-xs text-muted-foreground',
+    canJump &&
+      'cursor-pointer transition-[background-color,box-shadow] hover:bg-muted hover:shadow-[inset_2px_0_0_hsl(var(--primary))] focus-visible:ring-2 focus-visible:ring-primary/55 focus-visible:outline-none'
+  )
+  const content = (
+    <>
+      <div className="mb-0.5 flex min-w-0 items-center gap-1.5">
+        <span className="text-foreground/80 min-w-0 truncate font-medium">
+          回复 {replyTo.sender_name || '未知用户'}
+        </span>
+        {replyTo.message_id && (
+          <span className="text-muted-foreground/70 shrink-0 font-mono text-[10px]">
+            #{replyTo.message_id}
+          </span>
+        )}
+      </div>
+      <div className="line-clamp-2 leading-4 break-words whitespace-pre-wrap">
+        {replyTo.content || '原消息已无法访问'}
+      </div>
+    </>
+  )
+
+  if (canJump) {
+    return (
+      <button
+        type="button"
+        className={className}
+        title="跳转到原始消息"
+        onClick={() => onJumpToMessage?.(replyTo.message_id)}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return <div className={className}>{content}</div>
+}
+
+function buildMessageMediaKey(media: MaisakaMessageMedia, index: number) {
+  return `${media.kind}:${media.hash}:${media.index ?? index}`
+}
+
+function MessageMediaItem({ item }: { item: MaisakaMessageMedia }) {
+  const inlineSource = item.data_url?.trim() ?? ''
+  const remoteSource = item.url.trim()
+  const canShowOriginal = Boolean(inlineSource || remoteSource)
+  const [showOriginal, setShowOriginal] = useState(
+    canShowOriginal && Boolean(item.default_original)
+  )
+  const [resolvedSource, setResolvedSource] = useState(inlineSource)
+  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'error'>(
+    showOriginal && !inlineSource ? 'loading' : 'idle'
+  )
+  const [loadRequestId, setLoadRequestId] = useState(showOriginal && !inlineSource ? 1 : 0)
+  const label = item.kind === 'emoji' ? '表情包' : '图片'
+
+  useEffect(() => {
+    if (loadRequestId <= 0 || inlineSource || !remoteSource) {
+      return
+    }
+
+    let cancelled = false
+    let objectUrl: string | null = null
+
+    void backendApi
+      .get<Blob>(remoteSource, {
+        parse: 'blob',
+        cache: 'force-cache',
+        errorMessage: `读取${label}原文件失败`,
+      })
+      .then((blob) => {
+        if (cancelled) {
+          return
+        }
+        objectUrl = URL.createObjectURL(blob)
+        setResolvedSource(objectUrl)
+        setLoadState('idle')
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoadState('error')
+        }
+      })
+
+    return () => {
+      cancelled = true
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+  }, [inlineSource, label, loadRequestId, remoteSource])
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        'group bg-muted/40 hover:border-primary/60 hover:bg-muted/70 max-w-full overflow-hidden rounded-md border text-left transition-colors',
+        showOriginal ? 'p-1.5' : 'px-2.5 py-1.5'
+      )}
+      title={`点击切换为${showOriginal ? '识别文本' : '原文件'}`}
+      onClick={() => {
+        if (!canShowOriginal) {
+          return
+        }
+        if (!showOriginal) {
+          if (!inlineSource && !resolvedSource && loadState !== 'loading') {
+            setLoadState('loading')
+            setLoadRequestId((current) => current + 1)
+          }
+        }
+        setShowOriginal((current) => !current)
+      }}
+    >
+      {showOriginal ? (
+        resolvedSource ? (
+          <img
+            src={resolvedSource}
+            alt={`${label}原文件`}
+            className={cn(
+              'block rounded object-contain',
+              item.kind === 'emoji' ? 'max-h-24 max-w-24' : 'max-h-56 max-w-full'
+            )}
+            onError={() => {
+              setResolvedSource('')
+              setLoadState('error')
+            }}
+          />
+        ) : loadState === 'error' ? (
+          <span className="text-destructive flex min-h-8 items-center gap-1.5 px-1 text-xs">
+            <ImageOff className="h-3.5 w-3.5 shrink-0" />
+            原文件读取失败
+          </span>
+        ) : (
+          <span className="text-muted-foreground flex min-h-8 items-center gap-1.5 px-1 text-xs">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+            正在读取{label}…
+          </span>
+        )
+      ) : (
+        <span className="text-muted-foreground flex max-w-sm items-center gap-1.5 text-xs">
+          <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 break-words whitespace-pre-wrap">
+            {item.text || `[${label}]`}
+          </span>
+        </span>
+      )}
+    </button>
+  )
+}
+
+function MessageMediaContent({
+  content,
+  emptyLabel,
+  media = [],
+}: {
+  content?: string
+  emptyLabel: string
+  media?: MaisakaMessageMedia[]
+}) {
+  const normalizedContent = content ?? ''
+  const hasContent = normalizedContent.trim().length > 0
+  const hasMedia = media.length > 0
+
+  if (!hasContent && !hasMedia) {
+    return (
+      <p className="text-foreground/80 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap">
+        {emptyLabel}
+      </p>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {hasContent && (
+        <p className="text-foreground/80 text-sm leading-relaxed wrap-break-word whitespace-pre-wrap">
+          {normalizedContent}
+        </p>
+      )}
+      {hasMedia && (
+        <div className="flex flex-wrap gap-2">
+          {media.map((item, index) => {
+            const mediaKey = buildMessageMediaKey(item, index)
+            return <MessageMediaItem key={mediaKey} item={item} />
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MessageIngestedCard({
+  data,
+  onJumpToMessage,
+}: {
+  data: MessageIngestedEvent
+  onJumpToMessage: (messageId: string) => void
+}) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-blue-500">
-        <MessageSquare className="h-3.5 w-3.5" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="font-medium text-sm">{data.speaker_name}</span>
-          <span className="text-xs text-muted-foreground">{formatTimestamp(data.timestamp)}</span>
+      <MessageAvatar data={data} kind="ingested" />
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-sm font-medium">{data.speaker_name}</span>
+          <span className="text-muted-foreground text-xs">{formatTimestamp(data.timestamp)}</span>
         </div>
-        <p className="text-sm text-foreground/80 whitespace-pre-wrap wrap-break-word leading-relaxed">
-          {data.content || '[空消息]'}
-        </p>
+        <ReplyPreviewBlock onJumpToMessage={onJumpToMessage} replyTo={data.reply_to} />
+        <MessageMediaContent content={data.content} emptyLabel="[空消息]" media={data.media} />
       </div>
     </div>
   )
 }
 
-function MessageSentCard({ data }: { data: MessageSentEvent }) {
+function MessageSentCard({
+  data,
+  onJumpToMessage,
+}: {
+  data: MessageSentEvent
+  onJumpToMessage: (messageId: string) => void
+}) {
   return (
     <div className="flex items-start gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
-      <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500">
-        <Bot className="h-3.5 w-3.5" />
-      </div>
-      <div className="flex-1 min-w-0">
+      <MessageAvatar data={data} kind="sent" />
+      <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-center gap-2">
-          <span className="font-medium text-sm">{data.speaker_name || '麦麦'}</span>
-          <Badge variant="outline" className="text-[10px]">已发送</Badge>
-          <span className="text-xs text-muted-foreground">{formatTimestamp(data.timestamp)}</span>
+          <span className="text-sm font-medium">{data.speaker_name || '麦麦'}</span>
+          <Badge variant="outline" className="text-[10px]">
+            已发送
+          </Badge>
+          <span className="text-muted-foreground text-xs">{formatTimestamp(data.timestamp)}</span>
         </div>
-        <p className="text-sm text-foreground/80 whitespace-pre-wrap wrap-break-word leading-relaxed">
-          {data.content || '[非文本消息]'}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function CycleStartCard({ data }: { data: CycleStartEvent }) {
-  return (
-    <div className="flex items-center gap-3">
-      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-500/15 text-violet-500">
-        <Zap className="h-3.5 w-3.5" />
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-sm font-medium">推理循环 #{data.cycle_id}</span>
-        <Badge variant="outline" className="text-[10px]">
-          回合 {data.round_index + 1}/{data.max_rounds}
-        </Badge>
-        <Badge variant="secondary" className="text-[10px]">
-          上下文 {data.history_count} 条
-        </Badge>
+        <ReplyPreviewBlock onJumpToMessage={onJumpToMessage} replyTo={data.reply_to} />
+        <MessageMediaContent content={data.content} emptyLabel="[非文本消息]" media={data.media} />
       </div>
     </div>
   )
 }
 
 function TimingGateCard({ data }: { data: TimingGateResultEvent }) {
-  const actionConfig: Record<string, { label: string; variant: 'default' | 'secondary' | 'destructive'; icon: typeof ArrowRight }> = {
+  const actionConfig: Record<
+    string,
+    { label: string; variant: 'default' | 'secondary' | 'destructive'; icon: typeof ArrowRight }
+  > = {
     continue: { label: '继续执行', variant: 'default', icon: ArrowRight },
     wait: { label: '等待', variant: 'secondary', icon: PauseCircle },
     no_action: { label: '不回复', variant: 'destructive', icon: XCircle },
@@ -270,23 +869,23 @@ function TimingGateCard({ data }: { data: TimingGateResultEvent }) {
   const Icon = config.icon
 
   return (
-    <div className="flex items-start gap-3 rounded-md border bg-background px-3 py-2 shadow-sm">
+    <div className="bg-background flex items-start gap-3 rounded-md border px-3 py-2 shadow-sm">
       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-amber-500">
         <Timer className="h-3.5 w-3.5" />
       </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1 flex-wrap">
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium">反应</span>
-          <Badge variant="outline" className="text-[10px]">react</Badge>
-          <Badge variant={config.variant} className="text-[10px] gap-0.5">
+          <Badge variant="outline" className="text-[10px]">
+            react
+          </Badge>
+          <Badge variant={config.variant} className="gap-0.5 text-[10px]">
             <Icon className="h-2.5 w-2.5" />
             {config.label}
           </Badge>
-          <span className="text-xs text-muted-foreground">{formatMs(data.duration_ms)}</span>
+          <span className="text-muted-foreground text-xs">{formatMs(data.duration_ms)}</span>
         </div>
-        {data.content && (
-          <CollapsibleText text={data.content} maxLines={3} />
-        )}
+        {data.content && <CollapsibleText text={data.content} maxLines={3} />}
       </div>
     </div>
   )
@@ -300,28 +899,71 @@ function ToolCallBadges({ toolCalls }: { toolCalls: MaisakaToolCall[] }) {
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
       {toolCalls.map((tc: MaisakaToolCall, idx: number) => (
-        <Badge key={`${tc.id || tc.name}-${idx}`} variant="secondary" className="text-[10px] gap-1">
+        <Badge key={`${tc.id || tc.name}-${idx}`} variant="secondary" className="gap-1 text-[10px]">
           <Wrench className="h-2.5 w-2.5" />
           {tc.name}
+          {getToolCallSourceLabel(tc.source, tc.source_label) && (
+            <span
+              className={cn(
+                'ml-1 rounded-full border px-1 py-0 text-[9px] leading-4',
+                getToolCallSourceBadgeClassName(tc.source)
+              )}
+            >
+              {getToolCallSourceLabel(tc.source, tc.source_label)}
+            </span>
+          )}
         </Badge>
       ))}
     </div>
   )
 }
 
-function openPromptHtml(uri: string) {
+interface ReasoningRecordTarget {
+  session: string
+  stage: string
+  stem: string
+}
+
+function parsePromptHtmlReasoningTarget(uri: string): ReasoningRecordTarget | null {
   const normalized = uri.trim()
-  if (!normalized) return
-  window.open(normalized, '_blank', 'noopener,noreferrer')
+  if (!normalized || typeof window === 'undefined') return null
+
+  let url: URL
+  try {
+    url = new URL(normalized, window.location.origin)
+  } catch {
+    return null
+  }
+
+  if (
+    url.origin !== window.location.origin ||
+    url.pathname !== '/api/webui/config/maisaka-prompt-preview'
+  ) {
+    return null
+  }
+
+  const previewPath = url.searchParams.get('path')?.trim() ?? ''
+  const parts = previewPath.split('/').filter(Boolean)
+  if (parts.length < 3) return null
+
+  const [stage, session, filename] = parts
+  const supportedSuffix = ['.html', '.json'].find((suffix) => filename.endsWith(suffix))
+  if (!supportedSuffix) return null
+
+  const stem = filename.slice(0, -supportedSuffix.length)
+  if (!stage || !session || !stem) return null
+
+  return { stage, session, stem }
 }
 
 function isPlannerInterrupted(data: PlannerFinalizedEvent) {
   const content = data.planner?.content?.trim() ?? ''
-  return data.interrupted === true || (
-    content.startsWith('Planner ') &&
-    data.planner?.prompt_tokens === 0 &&
-    data.planner?.completion_tokens === 0 &&
-    data.planner?.tool_calls.length === 0
+  return (
+    data.interrupted === true ||
+    (content.startsWith('Planner ') &&
+      data.planner?.prompt_tokens === 0 &&
+      data.planner?.completion_tokens === 0 &&
+      data.planner?.tool_calls.length === 0)
   )
 }
 
@@ -337,10 +979,10 @@ function PlannerInterruptedCard({ data }: { data: PlannerFinalizedEvent }) {
           #{data.cycle_id}
         </Badge>
         {planner && planner.duration_ms > 0 && (
-          <span className="text-xs text-muted-foreground">{formatMs(planner.duration_ms)}</span>
+          <span className="text-muted-foreground text-xs">{formatMs(planner.duration_ms)}</span>
         )}
       </div>
-      <p className="mt-1 text-sm text-muted-foreground">
+      <p className="text-muted-foreground mt-1 text-sm">
         {planner?.content || '收到新消息，已停止当前思考并准备重新决策。'}
       </p>
     </div>
@@ -353,46 +995,51 @@ function PlannerResponseCard({ data }: { data: PlannerResponseEvent }) {
       <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500">
         <Brain className="h-3.5 w-3.5" />
       </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1 flex-wrap">
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium">规划器思考</span>
-          <span className="text-xs text-muted-foreground">{formatMs(data.duration_ms)}</span>
+          <span className="text-muted-foreground text-xs">{formatMs(data.duration_ms)}</span>
           <Badge variant="outline" className="text-[10px]">
             {data.prompt_tokens}+{data.completion_tokens} tokens
           </Badge>
         </div>
-        {data.content && (
-          <CollapsibleText text={data.content} maxLines={6} />
-        )}
+        {data.content && <CollapsibleText text={data.content} maxLines={6} />}
         <ToolCallBadges toolCalls={data.tool_calls} />
       </div>
     </div>
   )
 }
 
-function PlannerFinalizedCard({ data }: { data: PlannerFinalizedEvent }) {
+function PlannerFinalizedCard({
+  data,
+  onOpenReasoning,
+}: {
+  data: PlannerFinalizedEvent
+  onOpenReasoning: (promptHtmlUri: string) => void
+}) {
   const planner = data.planner
   const promptHtmlUri = planner?.prompt_html_uri?.trim() ?? ''
+  const canOpenReasoning = Boolean(promptHtmlUri && parsePromptHtmlReasoningTarget(promptHtmlUri))
 
   return (
     <Card className="border-l-4 border-l-emerald-500/60">
-      <CardHeader className="py-3 px-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
+      <CardHeader className="space-y-3 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-2">
           <Brain className="h-4 w-4 text-emerald-500" />
-          <CardTitle className="text-sm font-medium">主循环 planner</CardTitle>
-          {promptHtmlUri && (
+          <CardTitle className="text-sm font-medium">Planner</CardTitle>
+          {canOpenReasoning && (
             <Button
               variant="ghost"
               size="sm"
               className="h-6 px-2 text-[10px]"
-              onClick={() => openPromptHtml(promptHtmlUri)}
-              title="打开 planner HTML 记录"
+              onClick={() => onOpenReasoning(promptHtmlUri)}
+              title="在推理过程页查看对应记录"
             >
-              <ExternalLink className="mr-1 h-3 w-3" />
-              HTML
+              <FileCode2 className="mr-1 h-3 w-3" />
+              推理
             </Button>
           )}
-          <Badge variant="outline" className="text-xs font-normal ml-auto">
+          <Badge variant="outline" className="ml-auto text-xs font-normal">
             {formatMs(planner?.duration_ms ?? 0)}
           </Badge>
           {data.request && (
@@ -410,30 +1057,209 @@ function PlannerFinalizedCard({ data }: { data: PlannerFinalizedEvent }) {
         {planner?.content ? (
           <CollapsibleText text={planner.content} maxLines={6} className="text-foreground/90" />
         ) : (
-          <p className="text-sm text-muted-foreground">planner 本轮没有文本内容</p>
+          <p className="text-muted-foreground text-sm">planner 本轮没有文本内容</p>
         )}
-
       </CardHeader>
     </Card>
   )
 }
 
-function PlannerToolCallsBlock({ data }: { data: PlannerFinalizedEvent }) {
+function getValueTypeLabel(value: unknown) {
+  if (Array.isArray(value)) return `array(${value.length})`
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function formatToolValue(value: unknown) {
+  if (typeof value === 'string') return value
+  if (value === undefined) return 'undefined'
+  return JSON.stringify(value, null, 2)
+}
+
+function ToolArgumentBlock({ name, value }: { name: string; value: unknown }) {
+  const formattedValue = formatToolValue(value)
+  const inlineValue = formattedValue.replace(/\s+/g, ' ')
+
+  return (
+    <div
+      className="bg-background/60 flex h-6 max-w-full min-w-0 items-center gap-1.5 rounded-md border px-2 text-xs"
+      title={`${name} (${getValueTypeLabel(value)}): ${formattedValue}`}
+    >
+      <span className="text-foreground shrink-0 font-mono font-semibold">{name}</span>
+      <span className="text-muted-foreground shrink-0">=</span>
+      <span className="text-muted-foreground max-w-72 min-w-0 truncate font-mono text-[11px]">
+        {inlineValue}
+      </span>
+    </div>
+  )
+}
+
+function ToolFullJsonBlock({
+  tool,
+}: {
+  tool: {
+    duration_ms: number
+    prompt_html_uri?: string
+    success: boolean
+    summary: string
+    tool_args: Record<string, unknown>
+    tool_call_id: string
+    tool_call_source?: string
+    tool_call_source_label?: string
+    tool_name: string
+  }
+}) {
+  const payload = {
+    tool_call_id: tool.tool_call_id,
+    tool_name: tool.tool_name,
+    tool_args: tool.tool_args,
+    success: tool.success,
+    duration_ms: tool.duration_ms,
+    summary: tool.summary,
+    prompt_html_uri: tool.prompt_html_uri,
+    tool_call_source: tool.tool_call_source,
+    tool_call_source_label: tool.tool_call_source_label,
+  }
+
+  return (
+    <details className="group contents text-xs">
+      <summary
+        className="bg-background/40 text-muted-foreground hover:bg-muted/40 ml-auto flex h-6 cursor-pointer list-none items-center gap-1 rounded border border-dashed px-1.5 text-[10px]"
+        title="完整调用 JSON"
+      >
+        <ChevronRight className="h-2.5 w-2.5 shrink-0 transition-transform group-open:rotate-90" />
+        <span>JSON</span>
+      </summary>
+      <pre className="bg-background/60 text-muted-foreground basis-full rounded-md border px-2.5 py-1.5 font-mono text-[11px] leading-4 break-words whitespace-pre-wrap">
+        {JSON.stringify(payload, null, 2)}
+      </pre>
+    </details>
+  )
+}
+
+function PlannerToolResultCard({
+  tool,
+  index,
+  onOpenReasoning,
+}: {
+  tool: {
+    duration_ms: number
+    prompt_html_uri?: string
+    success: boolean
+    summary: string
+    tool_args: Record<string, unknown>
+    tool_call_id: string
+    tool_call_source?: string
+    tool_call_source_label?: string
+    tool_name: string
+  }
+  index: number
+  onOpenReasoning: (promptHtmlUri: string) => void
+}) {
+  const argumentEntries = Object.entries(tool.tool_args ?? {})
+  const statusText = tool.success ? '执行成功' : '执行失败'
+  const sourceLabel = getToolCallSourceLabel(tool.tool_call_source, tool.tool_call_source_label)
+  const promptHtmlUri = tool.prompt_html_uri?.trim() ?? ''
+  const canOpenReasoning = Boolean(promptHtmlUri && parsePromptHtmlReasoningTarget(promptHtmlUri))
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-foreground font-mono text-sm font-semibold">
+          {tool.tool_name || 'unknown'}
+        </span>
+        {tool.success ? (
+          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+        ) : (
+          <XCircle className="h-3.5 w-3.5 text-red-500" />
+        )}
+        <Badge
+          variant={tool.success ? 'secondary' : 'destructive'}
+          className="h-5 px-1.5 text-[10px]"
+        >
+          {statusText}
+        </Badge>
+        {sourceLabel && (
+          <Badge
+            variant="outline"
+            className={cn(
+              'h-5 px-1.5 text-[10px]',
+              getToolCallSourceBadgeClassName(tool.tool_call_source)
+            )}
+          >
+            {sourceLabel}
+          </Badge>
+        )}
+        {tool.duration_ms > 0 && (
+          <span className="text-muted-foreground text-xs font-medium">
+            {formatMs(tool.duration_ms)}
+          </span>
+        )}
+        {canOpenReasoning && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-1.5 text-[10px]"
+            onClick={() => onOpenReasoning(promptHtmlUri)}
+            title="查看这个工具对应的推理"
+          >
+            <FileCode2 className="mr-1 h-3 w-3" />
+            推理
+          </Button>
+        )}
+        <span className="text-muted-foreground ml-auto text-[10px]">#{index + 1}</span>
+      </div>
+
+      <div className="space-y-1.5">
+        {argumentEntries.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {argumentEntries.map(([name, value]) => (
+              <ToolArgumentBlock key={name} name={name} value={value} />
+            ))}
+            <ToolFullJsonBlock tool={tool} />
+          </div>
+        )}
+
+        <div className="bg-muted/20 flex items-start gap-1.5 rounded-md border px-2.5 py-1">
+          <span className="text-muted-foreground shrink-0 text-[10px] leading-4 font-medium">
+            执行结果
+          </span>
+          <p className="text-foreground/80 min-w-0 flex-1 text-xs leading-4 break-words whitespace-pre-wrap">
+            {tool.summary || '未返回结果摘要。'}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PlannerToolCallsBlock({
+  data,
+  onOpenReasoning,
+}: {
+  data: PlannerFinalizedEvent
+  onOpenReasoning: (promptHtmlUri: string) => void
+}) {
   const toolCalls = data.planner?.tool_calls ?? []
   const tools = data.tools ?? []
-  const displayTools = tools.length > 0
-    ? tools
-    : toolCalls.map((toolCall) => ({
-        tool_call_id: toolCall.id,
-        tool_name: toolCall.name,
-        tool_args: toolCall.arguments ?? {},
-        success: true,
-        duration_ms: 0,
-        summary: '',
-      }))
+  const displayTools =
+    tools.length > 0
+      ? tools
+      : toolCalls.map((toolCall) => ({
+          tool_call_id: toolCall.id,
+          tool_name: toolCall.name,
+          tool_args: toolCall.arguments ?? {},
+          tool_call_source: toolCall.source,
+          tool_call_source_label: toolCall.source_label,
+          success: true,
+          duration_ms: 0,
+          summary: '',
+        }))
   const isFinishTool = (toolName?: string) => toolName?.trim().toLowerCase() === 'finish'
   const finishTools = displayTools.filter((tool) => isFinishTool(tool.tool_name))
   const regularTools = displayTools.filter((tool) => !isFinishTool(tool.tool_name))
+  const plannerStopped =
+    finishTools.length > 0 || data.final_state.end_reason === 'tool_stop_after_execution'
 
   if (displayTools.length <= 0) {
     return null
@@ -453,15 +1279,15 @@ function PlannerToolCallsBlock({ data }: { data: PlannerFinalizedEvent }) {
 
   return (
     <Card className="border-l-4 border-l-teal-500/60">
-      <CardHeader className="py-3 px-4 space-y-2">
+      <CardHeader className="space-y-2 px-4 py-3">
         <div className="flex items-center gap-2">
           <Wrench className="h-4 w-4 text-teal-500" />
-          <CardTitle className="text-sm font-medium">Planner 工具调用</CardTitle>
+          <CardTitle className="text-sm font-medium">使用工具</CardTitle>
           <Badge variant="secondary" className="ml-auto text-[10px]">
             {regularTools.length} 个
           </Badge>
         </div>
-        {finishTools.length > 0 && (
+        {plannerStopped && (
           <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-1.5 text-xs">
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
             <span className="font-medium">本轮思考暂时结束</span>
@@ -470,27 +1296,70 @@ function PlannerToolCallsBlock({ data }: { data: PlannerFinalizedEvent }) {
         )}
         <div className="space-y-2">
           {regularTools.map((tool, idx) => (
+            <div key={`${tool.tool_call_id || tool.tool_name}-${idx}`} className="space-y-2">
+              {idx > 0 && <Separator />}
+              <PlannerToolResultCard tool={tool} index={idx} onOpenReasoning={onOpenReasoning} />
+            </div>
+          ))}
+        </div>
+      </CardHeader>
+    </Card>
+  )
+}
+
+function PlannerNativeToolCallsBlock({ data }: { data: PlannerFinalizedEvent }) {
+  const nativeToolCalls = data.planner?.native_tool_calls ?? []
+  if (nativeToolCalls.length <= 0) {
+    return null
+  }
+
+  return (
+    <Card className="border-l-4 border-l-sky-500/60">
+      <CardHeader className="space-y-2 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <Globe2 className="h-4 w-4 text-sky-500" />
+          <CardTitle className="text-sm font-medium">Provider 原生工具</CardTitle>
+          <Badge variant="secondary" className="ml-auto text-[10px]">
+            {nativeToolCalls.length} 次
+          </Badge>
+        </div>
+        <div className="space-y-2">
+          {nativeToolCalls.map((toolCall, index) => (
             <div
-              key={`${tool.tool_call_id || tool.tool_name}-${idx}`}
-              className="rounded-md border bg-muted/40 px-2.5 py-2 text-xs"
+              key={`${toolCall.call_id || toolCall.tool_type}-${index}`}
+              className="bg-muted/20 space-y-1 rounded-md border px-2.5 py-2"
             >
-              <div className="flex items-center gap-2">
-                <span className="font-mono font-medium">{tool.tool_name || 'unknown'}</span>
-                {tool.success
-                  ? <CheckCircle2 className="h-3.5 w-3.5 text-teal-500" />
-                  : <XCircle className="h-3.5 w-3.5 text-red-500" />
-                }
-                {tool.duration_ms > 0 && (
-                  <span className="text-muted-foreground">{formatMs(tool.duration_ms)}</span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-mono text-sm font-semibold">
+                  {toolCall.tool_type === 'web_search' ? '联网搜索' : toolCall.tool_type}
+                </span>
+                {toolCall.action_type && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {toolCall.action_type}
+                  </Badge>
+                )}
+                {toolCall.status && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {toolCall.status}
+                  </Badge>
+                )}
+                {toolCall.source_count > 0 && (
+                  <span className="text-muted-foreground ml-auto text-[10px]">
+                    来源 {toolCall.source_count} 个
+                  </span>
                 )}
               </div>
-              {Object.keys(tool.tool_args ?? {}).length > 0 && (
-                <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-background/70 px-2 py-1 text-[11px] text-muted-foreground">
-                  {JSON.stringify(tool.tool_args, null, 2)}
-                </pre>
-              )}
-              {tool.summary && (
-                <p className="mt-1 text-muted-foreground whitespace-pre-wrap break-words">{tool.summary}</p>
+              {toolCall.details.length > 0 ? (
+                toolCall.details.map((detail, detailIndex) => (
+                  <p
+                    key={`${toolCall.call_id || index}-detail-${detailIndex}`}
+                    className="text-foreground/80 text-xs break-words"
+                  >
+                    {detail}
+                  </p>
+                ))
+              ) : (
+                <p className="text-muted-foreground text-xs">供应商未返回查询详情。</p>
               )}
             </div>
           ))}
@@ -503,92 +1372,37 @@ function PlannerToolCallsBlock({ data }: { data: PlannerFinalizedEvent }) {
 function ToolExecutionCard({ data }: { data: ToolExecutionEvent }) {
   return (
     <div className="flex items-start gap-3">
-      <div className={cn(
-        'mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full',
-        data.success
-          ? 'bg-teal-500/15 text-teal-500'
-          : 'bg-red-500/15 text-red-500',
-      )}>
+      <div
+        className={cn(
+          'mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full',
+          data.success ? 'bg-teal-500/15 text-teal-500' : 'bg-red-500/15 text-red-500'
+        )}
+      >
         <Wrench className="h-3.5 w-3.5" />
       </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 mb-1 flex-wrap">
-          <span className="text-sm font-medium font-mono">{data.tool_name}</span>
-          {data.success
-            ? <CheckCircle2 className="h-3.5 w-3.5 text-teal-500" />
-            : <XCircle className="h-3.5 w-3.5 text-red-500" />
-          }
-          <span className="text-xs text-muted-foreground">{formatMs(data.duration_ms)}</span>
+      <div className="min-w-0 flex-1">
+        <div className="mb-1 flex flex-wrap items-center gap-2">
+          <span className="font-mono text-sm font-medium">{data.tool_name}</span>
+          {data.success ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-teal-500" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5 text-red-500" />
+          )}
+          <span className="text-muted-foreground text-xs">{formatMs(data.duration_ms)}</span>
         </div>
         {Object.keys(data.tool_args).length > 0 && (
-          <div className="text-xs text-muted-foreground font-mono bg-muted/50 rounded px-2 py-1 mb-1 whitespace-pre-wrap break-all">
+          <div className="text-muted-foreground bg-muted/50 mb-1 rounded px-2 py-1 font-mono text-xs break-all whitespace-pre-wrap">
             {JSON.stringify(data.tool_args, null, 2)}
           </div>
         )}
         {data.result_summary && (
-          <CollapsibleText text={data.result_summary} maxLines={3} className="text-muted-foreground" />
+          <CollapsibleText
+            text={data.result_summary}
+            maxLines={3}
+            className="text-muted-foreground"
+          />
         )}
       </div>
-    </div>
-  )
-}
-
-function getCycleEndReasonText(data: CycleEndEvent) {
-  const reason = data.end_reason ?? ''
-  const detail = data.end_detail?.trim()
-
-  if (detail) {
-    return detail
-  }
-
-  if (reason === 'finish') return 'Planner 调用 finish，结束本轮思考并等待新消息。'
-  if (reason === 'timing_no_action') return 'Timing Gate 选择 no_action，本轮不会进入 Planner。'
-  if (reason === 'max_rounds') return '已达到内部思考轮次上限，本轮处理结束。'
-  if (reason === 'planner_interrupted') return 'Planner 被新消息打断，当前轮结束。'
-  if (reason.startsWith('tool_pause:')) return `工具 ${reason.slice('tool_pause:'.length)} 要求暂停当前思考循环。`
-  if (reason === 'tool_pause') return '工具要求暂停当前思考循环。'
-  if (reason === 'empty_planner_response') return 'Planner 没有返回文本或工具调用，本轮思考结束。'
-  if (reason === 'tool_continue') return 'Planner 工具执行完成，继续下一轮内部思考。'
-  return '本轮思考完成。'
-}
-
-function getCycleEndReasonLabel(data: CycleEndEvent) {
-  const reason = data.end_reason ?? ''
-
-  if (reason === 'finish') return 'finish 结束'
-  if (reason === 'timing_no_action') return 'no_action 结束'
-  if (reason === 'max_rounds') return '轮次上限'
-  if (reason === 'planner_interrupted') return 'Planner 打断'
-  if (reason.startsWith('tool_pause:')) return '工具暂停'
-  if (reason === 'tool_pause') return '工具暂停'
-  if (reason === 'empty_planner_response') return '空响应'
-  if (reason === 'tool_continue') return '继续下一轮'
-  return '循环结束'
-}
-
-function CycleEndCard({ data }: { data: CycleEndEvent }) {
-  const totalTime = Object.values(data.time_records).reduce((a, b) => a + b, 0)
-  return (
-    <div className="my-1 space-y-1.5">
-      <div className="flex items-center gap-3">
-        <Separator className="flex-1" />
-        <div className="flex items-center gap-2 rounded-full border bg-background px-3 py-1">
-          <CircleDot className="h-3.5 w-3.5 text-slate-500" />
-          <span className="text-xs text-muted-foreground">{getCycleEndReasonLabel(data)}</span>
-          <Badge variant="outline" className="text-[10px]">
-            #{data.cycle_id}
-          </Badge>
-          <span className="text-[10px] text-muted-foreground">{formatMs(totalTime * 1000)}</span>
-          <Badge
-            variant={data.agent_state === 'running' ? 'default' : 'secondary'}
-            className="text-[10px]"
-          >
-            {data.agent_state}
-          </Badge>
-        </div>
-        <Separator className="flex-1" />
-      </div>
-      <p className="text-center text-xs text-muted-foreground">{getCycleEndReasonText(data)}</p>
     </div>
   )
 }
@@ -611,16 +1425,13 @@ function CollapsibleText({
   if (!needsCollapse || expanded) {
     return (
       <div className="relative">
-        <p className={cn(
-          'text-sm whitespace-pre-wrap wrap-break-word leading-relaxed',
-          className,
-        )}>
+        <p className={cn('text-sm leading-relaxed wrap-break-word whitespace-pre-wrap', className)}>
           {text}
         </p>
         {needsCollapse && (
           <button
             onClick={() => setExpanded(false)}
-            className="text-xs text-primary hover:underline mt-1 flex items-center gap-0.5"
+            className="text-primary mt-1 flex items-center gap-0.5 text-xs hover:underline"
           >
             <ChevronDown className="h-3 w-3" /> 收起
           </button>
@@ -631,15 +1442,12 @@ function CollapsibleText({
 
   return (
     <div>
-      <p className={cn(
-        'text-sm whitespace-pre-wrap wrap-break-word leading-relaxed',
-        className,
-      )}>
+      <p className={cn('text-sm leading-relaxed wrap-break-word whitespace-pre-wrap', className)}>
         {lines.slice(0, maxLines).join('\n')}
       </p>
       <button
         onClick={() => setExpanded(true)}
-        className="text-xs text-primary hover:underline mt-1 flex items-center gap-0.5"
+        className="text-primary mt-1 flex items-center gap-0.5 text-xs hover:underline"
       >
         <ChevronRight className="h-3 w-3" /> 展开全部 ({lines.length} 行)
       </button>
@@ -652,37 +1460,41 @@ function CollapsibleText({
 function ReplierResponseCard({ data }: { data: ReplierResponseEvent }) {
   return (
     <Card className="border-l-4 border-l-purple-500/60">
-      <CardHeader className="py-2.5 px-4 space-y-2">
+      <CardHeader className="space-y-2 px-4 py-2.5">
         <div className="flex items-center gap-2">
           <Bot className="h-4 w-4 text-purple-500" />
           <CardTitle className="text-sm font-medium">回复器响应</CardTitle>
-          <Badge variant="outline" className="text-xs font-normal ml-auto">
+          <Badge variant="outline" className="ml-auto text-xs font-normal">
             {formatMs(data.duration_ms)}
           </Badge>
           {data.success ? (
-            <Badge variant="secondary" className="text-xs gap-1">
+            <Badge variant="secondary" className="gap-1 text-xs">
               <CheckCircle2 className="h-3 w-3" /> 成功
             </Badge>
           ) : (
-            <Badge variant="destructive" className="text-xs gap-1">
+            <Badge variant="destructive" className="gap-1 text-xs">
               <XCircle className="h-3 w-3" /> 失败
             </Badge>
           )}
-          <span className="text-xs text-muted-foreground">{formatTimestamp(data.timestamp)}</span>
+          <span className="text-muted-foreground text-xs">{formatTimestamp(data.timestamp)}</span>
         </div>
         {data.content && (
           <CollapsibleText text={data.content} maxLines={6} className="text-foreground/90" />
         )}
         {data.reasoning && (
           <details className="mt-1">
-            <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+            <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs">
               思考过程
             </summary>
-            <CollapsibleText text={data.reasoning} maxLines={8} className="mt-1 text-muted-foreground" />
+            <CollapsibleText
+              text={data.reasoning}
+              maxLines={8}
+              className="text-muted-foreground mt-1"
+            />
           </details>
         )}
         {(data.prompt_tokens > 0 || data.completion_tokens > 0) && (
-          <div className="flex gap-3 text-xs text-muted-foreground mt-1">
+          <div className="text-muted-foreground mt-1 flex gap-3 text-xs">
             {data.model_name && <span>模型: {data.model_name}</span>}
             <span>输入: {data.prompt_tokens}</span>
             <span>输出: {data.completion_tokens}</span>
@@ -698,19 +1510,25 @@ function ReplierResponseCard({ data }: { data: ReplierResponseEvent }) {
 
 function TimelineEventRenderer({
   entry,
-  showCycleMarkers,
+  onJumpToMessage,
+  onOpenReasoning,
 }: {
   entry: TimelineEntry
-  showCycleMarkers: boolean
+  onJumpToMessage: (messageId: string) => void
+  onOpenReasoning: (promptHtmlUri: string) => void
 }) {
   switch (entry.type) {
     case 'message.ingested':
-      return <MessageIngestedCard data={entry.data as MessageIngestedEvent} />
+      return (
+        <MessageIngestedCard
+          data={entry.data as MessageIngestedEvent}
+          onJumpToMessage={onJumpToMessage}
+        />
+      )
     case 'message.sent':
-      return <MessageSentCard data={entry.data as MessageSentEvent} />
-    case 'cycle.start':
-      if (!showCycleMarkers) return null
-      return <CycleStartCard data={entry.data as CycleStartEvent} />
+      return (
+        <MessageSentCard data={entry.data as MessageSentEvent} onJumpToMessage={onJumpToMessage} />
+      )
     case 'timing_gate.result':
       return <TimingGateCard data={entry.data as TimingGateResultEvent} />
     case 'planner.response':
@@ -724,14 +1542,19 @@ function TimelineEventRenderer({
       }
       return (
         <div className="space-y-2">
-          <PlannerFinalizedCard data={entry.data as PlannerFinalizedEvent} />
-          <PlannerToolCallsBlock data={entry.data as PlannerFinalizedEvent} />
+          <PlannerFinalizedCard
+            data={entry.data as PlannerFinalizedEvent}
+            onOpenReasoning={onOpenReasoning}
+          />
+          <PlannerNativeToolCallsBlock data={entry.data as PlannerFinalizedEvent} />
+          <PlannerToolCallsBlock
+            data={entry.data as PlannerFinalizedEvent}
+            onOpenReasoning={onOpenReasoning}
+          />
         </div>
       )
     case 'tool.execution':
       return <ToolExecutionCard data={entry.data as ToolExecutionEvent} />
-    case 'cycle.end':
-      return <CycleEndCard data={entry.data as CycleEndEvent} />
     case 'replier.response':
       return <ReplierResponseCard data={entry.data as ReplierResponseEvent} />
     // planner.request, replier.request 和 session.start 通常不需要在 timeline 中主要展示
@@ -742,7 +1565,16 @@ function TimelineEventRenderer({
 
 // ─── 主组件 ─────────────────────────────────────────────────
 
-export function MaisakaMonitor() {
+interface MaisakaMonitorProps {
+  /** 嵌入聊天工作区时隐藏重复的会话侧边栏，并使用父容器提供的完整高度。 */
+  embedded?: boolean
+  /** 打开推理详情后返回的地址；未提供时返回当前页面。 */
+  reasoningReturnTo?: string
+}
+
+export function MaisakaMonitor({ embedded = false, reasoningReturnTo }: MaisakaMonitorProps = {}) {
+  const navigate = useNavigate()
+  const { toast } = useToast()
   const {
     timeline,
     sessions,
@@ -750,175 +1582,403 @@ export function MaisakaMonitor() {
     selectedSession,
     setSelectedSession,
     connected,
-    backgroundCollection,
-    setBackgroundCollectionEnabled,
     clearTimeline,
   } = useMaisakaMonitor()
 
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [scrollViewport, setScrollViewport] = useState<HTMLDivElement | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+  const [focusedMessageId, setFocusedMessageId] = useState<string | null>(null)
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 程序化跳转滚动期间忽略滚动监听，防止自动跟随把视图拉回底部 */
+  const revealScrollLockRef = useRef(false)
+  const previousSelectedSessionRef = useRef<string | null | undefined>(undefined)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem('maisaka-monitor-sidebar-collapsed')
     return saved !== 'false'
   })
-  const [showCycleMarkers, setShowCycleMarkers] = useState(() => {
-    const saved = localStorage.getItem('maisaka-monitor-show-cycle-markers')
-    return saved === 'true'
-  })
+
+  const handleOpenReasoning = useCallback(
+    (promptHtmlUri: string) => {
+      const target = parsePromptHtmlReasoningTarget(promptHtmlUri)
+      if (!target) return
+
+      const params = new URLSearchParams({
+        stage: target.stage,
+        session: target.session,
+        stem: target.stem,
+        returnTo:
+          reasoningReturnTo ??
+          `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      })
+      navigate({ to: `/reasoning-process?${params.toString()}` })
+    },
+    [navigate, reasoningReturnTo]
+  )
 
   useEffect(() => {
     localStorage.setItem('maisaka-monitor-sidebar-collapsed', String(sidebarCollapsed))
   }, [sidebarCollapsed])
 
+  useEffect(
+    () => () => {
+      if (focusTimerRef.current !== null) {
+        clearTimeout(focusTimerRef.current)
+      }
+    },
+    []
+  )
+
   useEffect(() => {
-    localStorage.setItem('maisaka-monitor-show-cycle-markers', String(showCycleMarkers))
-  }, [showCycleMarkers])
+    const viewport = scrollRef.current?.querySelector(
+      '[data-radix-scroll-area-viewport]'
+    ) as HTMLDivElement | null
+    setScrollViewport(viewport)
+  }, [])
+
+  const visibleTimelineEntries = useMemo(() => {
+    const noReplyTimingGateCycles = new Set<string>()
+    const visibleEntries: TimelineEntry[] = []
+
+    for (const entry of timeline) {
+      if (entry.type === 'timing_gate.result') {
+        const data = entry.data as TimingGateResultEvent
+        if (data.action === 'no_action') {
+          noReplyTimingGateCycles.add(buildCycleKey(data.session_id, data.cycle_id))
+        }
+        visibleEntries.push(entry)
+        continue
+      }
+
+      if (entry.type === 'planner.response' || entry.type === 'planner.finalized') {
+        const data = entry.data as PlannerResponseEvent | PlannerFinalizedEvent
+        const cycleKey = buildCycleKey(data.session_id, data.cycle_id)
+        if (
+          entry.type === 'planner.finalized' &&
+          isPlannerInterrupted(data as PlannerFinalizedEvent)
+        ) {
+          visibleEntries.push(entry)
+          continue
+        }
+        if (noReplyTimingGateCycles.has(cycleKey)) {
+          continue
+        }
+        visibleEntries.push(entry)
+        continue
+      }
+
+      if (
+        entry.type === 'message.ingested' ||
+        entry.type === 'message.sent' ||
+        entry.type === 'tool.execution' ||
+        entry.type === 'replier.response'
+      ) {
+        visibleEntries.push(entry)
+      }
+    }
+
+    return visibleEntries
+  }, [timeline])
+
+  // TanStack Virtual 与 React Compiler 不兼容，保持现有虚拟列表实现
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const timelineVirtualizer = useVirtualizer({
+    count: visibleTimelineEntries.length,
+    getScrollElement: () => scrollViewport,
+    estimateSize: () => 140,
+    getItemKey: (index) => visibleTimelineEntries[index]?.id ?? index,
+    overscan: 8,
+  })
+
+  const messageEntryIndexes = useMemo(() => {
+    const indexes = new Map<string, number>()
+    visibleTimelineEntries.forEach((entry, index) => {
+      if (entry.type !== 'message.ingested' && entry.type !== 'message.sent') {
+        return
+      }
+      const data = entry.data as MessageIngestedEvent | MessageSentEvent
+      if (data.message_id && !indexes.has(data.message_id)) {
+        indexes.set(data.message_id, index)
+      }
+    })
+    return indexes
+  }, [visibleTimelineEntries])
+
+  /** 滚动到指定时间线位置，并短暂高亮该条消息（供消息跳转与“查找上条”共用） */
+  const revealTimelineMessage = useCallback(
+    (targetIndex: number, messageId: string) => {
+      setAutoScroll(false)
+      // 平滑滚动的开头几帧仍在底部阈值内，锁住滚动监听，避免被当成“用户回到底部”而拉回底部
+      revealScrollLockRef.current = true
+      setFocusedMessageId(messageId)
+      timelineVirtualizer.scrollToIndex(targetIndex, {
+        align: 'center',
+        behavior: 'smooth',
+      })
+      if (focusTimerRef.current !== null) {
+        clearTimeout(focusTimerRef.current)
+      }
+      focusTimerRef.current = setTimeout(() => {
+        setFocusedMessageId(null)
+        revealScrollLockRef.current = false
+        focusTimerRef.current = null
+      }, 1800)
+    },
+    [timelineVirtualizer]
+  )
+
+  const handleJumpToMessage = useCallback(
+    (messageId: string) => {
+      const targetIndex = messageEntryIndexes.get(messageId)
+      if (targetIndex === undefined) {
+        toast({
+          title: '原始消息不在当前时间线',
+          description: '该消息可能已被清除、尚未加载，或不属于当前聊天流。',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      revealTimelineMessage(targetIndex, messageId)
+    },
+    [messageEntryIndexes, revealTimelineMessage, toast]
+  )
+
+  /** 向上查找当前视口上方最近一条麦麦自己发送的消息并滚动过去 */
+  const handleFindPreviousBotMessage = useCallback(() => {
+    const viewportTop = scrollViewport?.scrollTop ?? 0
+    // 虚拟列表带 overscan，按行位置过滤出视口内第一行，避免选中视口上方的预渲染行
+    const firstVisibleIndex =
+      timelineVirtualizer.getVirtualItems().find((item) => item.end > viewportTop)?.index ?? 0
+
+    for (let index = firstVisibleIndex - 1; index >= 0; index -= 1) {
+      const entry = visibleTimelineEntries[index]
+      if (entry?.type !== 'message.sent') {
+        continue
+      }
+      const data = entry.data as MessageSentEvent
+      if (!data.message_id) {
+        continue
+      }
+      revealTimelineMessage(index, data.message_id)
+      return
+    }
+
+    toast({
+      title: '上方没有更多麦麦发送的消息',
+      description: '已经到达当前时间线里麦麦发送消息的最上方。',
+    })
+  }, [revealTimelineMessage, scrollViewport, timelineVirtualizer, toast, visibleTimelineEntries])
+
+  const scrollToBottom = useCallback(
+    (behavior: TimelineScrollBehavior = 'smooth') => {
+      if (visibleTimelineEntries.length > 0) {
+        timelineVirtualizer.scrollToIndex(visibleTimelineEntries.length - 1, {
+          align: 'end',
+          behavior,
+        })
+      } else {
+        scrollViewport?.scrollTo({
+          top: scrollViewport.scrollHeight,
+          behavior,
+        })
+      }
+      setAutoScroll(true)
+    },
+    [scrollViewport, timelineVirtualizer, visibleTimelineEntries.length]
+  )
 
   // 自动滚动到底部
   useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      const viewport = scrollRef.current.querySelector('[data-radix-scroll-area-viewport]')
-      if (viewport) {
-        viewport.scrollTop = viewport.scrollHeight
+    if (autoScroll) {
+      requestAnimationFrame(() => scrollToBottom('auto'))
+    }
+  }, [visibleTimelineEntries.length, autoScroll, scrollToBottom])
+
+  useEffect(() => {
+    if (previousSelectedSessionRef.current === selectedSession) {
+      return
+    }
+    previousSelectedSessionRef.current = selectedSession
+    setAutoScroll(true)
+    requestAnimationFrame(() => scrollToBottom('auto'))
+  }, [selectedSession, scrollToBottom])
+
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const target =
+        scrollViewport ?? e.currentTarget.querySelector('[data-radix-scroll-area-viewport]')
+      if (!target) return
+      const { scrollTop, scrollHeight, clientHeight } = target as HTMLElement
+      const distanceToBottom = scrollHeight - scrollTop - clientHeight
+
+      // 程序化跳转期间：平滑滚动的起始帧仍在底部阈值内，
+      // 此时既不能重新开启自动跟随（会打断滚动并拉回底部），也不需要关闭
+      if (revealScrollLockRef.current) {
+        if (distanceToBottom < 80) return
+        // 已经离开底部阈值，恢复正常判定
+        revealScrollLockRef.current = false
+      }
+
+      setAutoScroll(distanceToBottom < 80)
+    },
+    [scrollViewport]
+  )
+
+  // 统计当前会话的各事件类型计数，以及上下文构成与缓存命中情况
+  const stats = useMemo(() => {
+    const currentStats: MonitorStats = {
+      messages: 0,
+      cycles: 0,
+      toolCalls: 0,
+      contextTokens: 0,
+      contextSections: [],
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      cacheHitRate: null,
+    }
+    let cacheHitTokens = 0
+    let cacheMissTokens = 0
+    // 最近一轮带上下文分段统计的请求
+    let latestSections: MaisakaContextSection[] = []
+
+    for (const entry of timeline) {
+      if (entry.type === 'message.ingested' || entry.type === 'message.sent') {
+        currentStats.messages += 1
+        continue
+      }
+      if (entry.type === 'tool.execution') {
+        currentStats.toolCalls += 1
+        continue
+      }
+      if (entry.type !== 'planner.finalized') {
+        continue
+      }
+
+      currentStats.cycles += 1
+      const finalized = entry.data as PlannerFinalizedEvent
+      currentStats.toolCalls += finalized.tools?.length ?? 0
+      const planner = finalized.planner
+      if (!planner) {
+        continue
+      }
+
+      currentStats.totalPromptTokens += planner.prompt_tokens
+      currentStats.totalCompletionTokens += planner.completion_tokens
+      cacheHitTokens += planner.prompt_cache_hit_tokens ?? 0
+      cacheMissTokens += planner.prompt_cache_miss_tokens ?? 0
+      // 以最近一轮真实请求代表当前上下文
+      if (planner.prompt_tokens > 0 && finalized.request?.context_sections?.length) {
+        currentStats.contextTokens = planner.prompt_tokens
+        latestSections = finalized.request.context_sections
       }
     }
-  }, [timeline, autoScroll])
 
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const target = e.currentTarget.querySelector('[data-radix-scroll-area-viewport]')
-    if (!target) return
-    const { scrollTop, scrollHeight, clientHeight } = target as HTMLElement
-    setAutoScroll(scrollHeight - scrollTop - clientHeight < 80)
-  }, [])
+    const cacheTotalTokens = cacheHitTokens + cacheMissTokens
+    if (cacheTotalTokens > 0) {
+      currentStats.cacheHitRate = (cacheHitTokens / cacheTotalTokens) * 100
+    }
 
-  // 统计当前会话的各事件类型计数
-  const stats = {
-    messages: timeline.filter((e) => e.type === 'message.ingested' || e.type === 'message.sent').length,
-    cycles: timeline.filter((e) => e.type === 'cycle.start').length,
-    toolCalls: timeline.reduce((count, entry) => {
-      if (entry.type === 'tool.execution') {
-        return count + 1
-      }
-      if (entry.type === 'planner.finalized') {
-        return count + ((entry.data as PlannerFinalizedEvent).tools?.length ?? 0)
-      }
-      return count
-    }, 0),
-  }
+    const totalChars = latestSections.reduce((sum, section) => sum + section.chars, 0)
+    if (currentStats.contextTokens > 0 && totalChars > 0) {
+      // 按字符占比把真实 token 总量分摊到各分段，占比大的分段优先展示
+      currentStats.contextSections = latestSections
+        .filter((section) => section.chars > 0)
+        .map((section) => ({
+          key: section.key,
+          tokens: (currentStats.contextTokens * section.chars) / totalChars,
+          percent: (section.chars / totalChars) * 100,
+        }))
+        .sort((a, b) => b.percent - a.percent)
+    }
+
+    return currentStats
+  }, [timeline])
   const selectedStageStatus = selectedSession ? stageStatuses.get(selectedSession) : undefined
+  const virtualItems = timelineVirtualizer.getVirtualItems()
 
   return (
-    <div className="flex min-w-0 flex-col gap-4 lg:h-[calc(100vh-180px)] lg:flex-row">
+    <div
+      className={cn(
+        'flex min-w-0 flex-col',
+        embedded ? 'h-full min-h-0 p-2 sm:p-3' : 'gap-4 lg:h-[calc(100vh-116px)] lg:flex-row'
+      )}
+    >
       {/* 会话侧边栏 */}
-      <Card className={cn(
-        'flex min-w-0 shrink-0 flex-col transition-[width] duration-200',
-        sidebarCollapsed ? 'w-full lg:w-16' : 'w-full lg:w-52',
-      )}>
-        <CardHeader className={cn('py-3 space-y-0', sidebarCollapsed ? 'px-2' : 'px-3')}>
-          <CardTitle className={cn(
-            'text-sm font-medium flex items-center gap-2',
-            sidebarCollapsed && 'justify-center text-[0px]',
-          )}>
-            {!sidebarCollapsed && <Activity className="h-4 w-4" />}
-            聊天流
-            {connected && (
-              <span className={cn('flex h-2 w-2 rounded-full bg-emerald-500', !sidebarCollapsed && 'ml-auto')} />
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 shrink-0"
-              onClick={() => setSidebarCollapsed((value) => !value)}
-              title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+      {!embedded && (
+        <aside
+          className={cn(
+            'border-border bg-background/45 flex min-w-0 shrink-0 flex-col overflow-hidden border transition-[width] duration-200',
+            sidebarCollapsed ? 'w-full lg:w-16' : 'w-full lg:w-52'
+          )}
+        >
+          <div className={cn('py-2', sidebarCollapsed ? 'px-2' : 'px-3')}>
+            <h2
+              className={cn(
+                'flex items-center gap-2 text-sm font-medium',
+                sidebarCollapsed && 'justify-center text-[0px]'
+              )}
             >
-              {sidebarCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-            </Button>
-          </CardTitle>
-        </CardHeader>
-        <Separator />
-        <ScrollArea className="max-h-40 flex-1 lg:max-h-none">
-          <SessionSidebar
-            sessions={sessions}
-            stageStatuses={stageStatuses}
-            selectedSession={selectedSession}
-            onSelect={setSelectedSession}
-            collapsed={sidebarCollapsed}
-          />
-        </ScrollArea>
-      </Card>
+              {!sidebarCollapsed && <Activity className="h-4 w-4" />}
+              聊天流
+              {connected && (
+                <span
+                  className={cn(
+                    'flex h-2 w-2 rounded-full bg-emerald-500',
+                    !sidebarCollapsed && 'ml-auto'
+                  )}
+                />
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 shrink-0"
+                onClick={() => setSidebarCollapsed((value) => !value)}
+                title={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+              >
+                {sidebarCollapsed ? (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </h2>
+          </div>
+          <Separator />
+          <ScrollArea className="max-h-40 flex-1 lg:max-h-none">
+            <SessionSidebar
+              sessions={sessions}
+              stageStatuses={stageStatuses}
+              selectedSession={selectedSession}
+              onSelect={setSelectedSession}
+              collapsed={sidebarCollapsed}
+            />
+          </ScrollArea>
+        </aside>
+      )}
 
       {/* 主时间线区域 */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* 顶部统计栏 */}
-        <div className="mb-3 flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              <MessageSquare className="h-3.5 w-3.5" />
-              <span>{stats.messages} 消息</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              <Brain className="h-3.5 w-3.5" />
-              <span>{stats.cycles} 循环</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              <Wrench className="h-3.5 w-3.5" />
-              <span>{stats.toolCalls} 工具调用</span>
-            </div>
-          </div>
-          <div className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto">
-            <Button
-              variant={backgroundCollection ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 max-w-full text-xs"
-              onClick={() => setBackgroundCollectionEnabled(!backgroundCollection)}
-              title={backgroundCollection ? '关闭离开页面后的持续获取' : '开启离开页面后的持续获取'}
-            >
-              <Radio className={cn('h-3.5 w-3.5 mr-1', backgroundCollection && 'text-primary')} />
-              持续获取
-            </Button>
-            <Button
-              variant={showCycleMarkers ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-7 max-w-full text-xs"
-              onClick={() => setShowCycleMarkers((value) => !value)}
-              title={showCycleMarkers ? '隐藏推理循环标记' : '显示推理循环标记'}
-            >
-              <CircleDot className={cn('h-3.5 w-3.5 mr-1', showCycleMarkers && 'text-primary')} />
-              循环标记
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 max-w-full text-xs"
-              onClick={() => setAutoScroll(!autoScroll)}
-            >
-              <Gauge className={cn('h-3.5 w-3.5 mr-1', autoScroll && 'text-primary')} />
-              {autoScroll ? '跟踪中' : '已暂停'}
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 max-w-full text-xs"
-              onClick={clearTimeline}
-            >
-              <Eraser className="h-3.5 w-3.5 mr-1" />
-              清空
-            </Button>
-          </div>
-        </div>
-
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* 时间线 */}
-        <StageStatusPanel status={selectedStageStatus} />
+        <StageStatusPanel
+          autoScroll={autoScroll}
+          onClearTimeline={clearTimeline}
+          onFindPreviousBotMessage={handleFindPreviousBotMessage}
+          onScrollToBottom={() => scrollToBottom('smooth')}
+          stats={stats}
+          status={selectedStageStatus}
+        />
 
-        <Card className="min-h-[420px] min-w-0 flex-1 overflow-hidden lg:min-h-0">
-          <ScrollArea
-            className="h-full"
-            ref={scrollRef}
-            onScrollCapture={handleScroll}
-          >
-            <div className="min-w-0 space-y-3 p-4">
-              {timeline.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
+        <Card
+          className={cn(
+            'min-w-0 flex-1 overflow-hidden',
+            embedded ? 'min-h-0' : 'min-h-[420px] lg:min-h-0'
+          )}
+        >
+          <ScrollArea className="h-full" ref={scrollRef} onScrollCapture={handleScroll}>
+            <div className="min-w-0 p-4">
+              {visibleTimelineEntries.length === 0 ? (
+                <div className="text-muted-foreground flex flex-col items-center justify-center gap-3 py-20">
                   <Clock className="h-10 w-10 opacity-30" />
                   <p className="text-sm">等待 MaiSaka 推理事件…</p>
                   <p className="text-xs opacity-60">
@@ -926,49 +1986,48 @@ export function MaisakaMonitor() {
                   </p>
                 </div>
               ) : (
-                (() => {
-                  const noReplyTimingGateCycles = new Set<string>()
-
-                  return timeline.map((entry) => {
-                    if (entry.type === 'timing_gate.result') {
-                      const data = entry.data as TimingGateResultEvent
-                      if (data.action === 'no_action') {
-                        noReplyTimingGateCycles.add(buildCycleKey(data.session_id, data.cycle_id))
-                      }
-                    }
-
-                    if (entry.type === 'planner.response' || entry.type === 'planner.finalized') {
-                      const data = entry.data as PlannerResponseEvent | PlannerFinalizedEvent
-                      const cycleKey = buildCycleKey(data.session_id, data.cycle_id)
-                      if (entry.type === 'planner.finalized' && isPlannerInterrupted(data as PlannerFinalizedEvent)) {
-                        const rendered = <TimelineEventRenderer entry={entry} showCycleMarkers={showCycleMarkers} />
-                        if (!rendered) return null
-                        return (
-                          <div
-                            key={entry.id}
-                            className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300"
-                          >
-                            {rendered}
-                          </div>
-                        )
-                      }
-                      if (noReplyTimingGateCycles.has(cycleKey)) {
-                        return null
-                      }
-                    }
-
-                    const rendered = <TimelineEventRenderer entry={entry} showCycleMarkers={showCycleMarkers} />
-                    if (!rendered) return null
+                <div
+                  className="relative min-w-0"
+                  style={{ height: `${timelineVirtualizer.getTotalSize()}px` }}
+                >
+                  {virtualItems.map((virtualItem) => {
+                    const entry = visibleTimelineEntries[virtualItem.index]
+                    if (!entry) return null
+                    const entryData = entry.data as unknown as Record<string, unknown>
+                    const entryMessageId =
+                      typeof entryData.message_id === 'string' ? entryData.message_id : undefined
                     return (
                       <div
-                        key={entry.id}
-                        className="animate-in fade-in-0 slide-in-from-bottom-2 duration-300"
+                        key={virtualItem.key}
+                        ref={timelineVirtualizer.measureElement}
+                        data-index={virtualItem.index}
+                        className="absolute top-0 right-0 left-0 pb-3"
+                        style={{ transform: `translateY(${virtualItem.start}px)` }}
                       >
-                        {rendered}
+                        <div
+                          data-maisaka-message-id={entryMessageId}
+                          data-jump-highlighted={
+                            entryMessageId && focusedMessageId === entryMessageId
+                              ? 'true'
+                              : undefined
+                          }
+                          className={cn(
+                            'animate-in fade-in-0 slide-in-from-bottom-2 rounded-md duration-300',
+                            entryMessageId &&
+                              focusedMessageId === entryMessageId &&
+                              'bg-primary/5 ring-primary/55 ring-offset-background ring-2 ring-offset-2'
+                          )}
+                        >
+                          <TimelineEventRenderer
+                            entry={entry}
+                            onJumpToMessage={handleJumpToMessage}
+                            onOpenReasoning={handleOpenReasoning}
+                          />
+                        </div>
                       </div>
                     )
-                  })
-                })()
+                  })}
+                </div>
               )}
             </div>
           </ScrollArea>

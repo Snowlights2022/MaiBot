@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -10,9 +11,11 @@ import time
 
 from src.chat.message_receive.chat_manager import chat_manager as _chat_manager
 from src.chat.message_receive.message import SessionMessage
+from src.common.data_models.message_component_data_model import AtComponent
 from src.common.logger import get_logger
 from src.config.config import global_config
 from src.person_info.person_info import Person
+from src.services.bot_account_service import get_bot_accounts
 from src.services.embedding_service import EmbeddingServiceClient
 
 from .typo_generator import ChineseTypoGenerator
@@ -22,6 +25,14 @@ if TYPE_CHECKING:
 
 logger = get_logger("chat_utils")
 _warned_unconfigured_platforms: set[str] = set()
+
+
+@dataclass(frozen=True)
+class ProcessedResponseSegment:
+    """回复后处理产生的单条消息及其发送提示。"""
+
+    text: str
+    quote_previous: bool = False
 
 
 def is_english_letter(char: str) -> bool:
@@ -56,42 +67,34 @@ def _get_configured_qq_account() -> str:
     return qq_account
 
 
-def get_bot_account(platform: str) -> str:
-    """根据当前平台获取对应的机器人账号。"""
-    normalized_platform = str(platform or "").strip().lower()
-    if not normalized_platform:
-        return ""
+def get_bot_account(platform: str, preferred_account_id: Optional[str] = None) -> str:
+    """解析单个 Bot 账号；多账号且无会话归属时拒绝猜测。"""
 
-    qq_account = _get_configured_qq_account()
-    if normalized_platform in {"qq", "webui"}:
-        return qq_account
-
-    platforms_list = getattr(global_config.bot, "platforms", []) or []
-    platform_accounts = parse_platform_accounts(platforms_list)
-    if normalized_platform in {"tg", "telegram"}:
-        return platform_accounts.get("tg", "") or platform_accounts.get("telegram", "")
-
-    return platform_accounts.get(normalized_platform, "")
+    preferred = str(preferred_account_id or "").strip()
+    if preferred:
+        return preferred
+    accounts = get_bot_accounts(platform)
+    if len(accounts) == 1:
+        return next(iter(accounts))
+    if len(accounts) > 1:
+        logger.error(f"平台 {platform} 存在多个 Bot 账号，缺少聊天流 account_id，无法选择发送身份")
+    return ""
 
 
-def get_all_bot_accounts() -> dict[str, str]:
-    """获取所有已配置的机器人运行时身份。"""
+def get_configured_bot_accounts() -> dict[str, str]:
+    """读取 legacy 发送链使用的备用配置账号，不包含数据库身份。"""
+
     bot_accounts: dict[str, str] = {}
     qq_account = _get_configured_qq_account()
     if qq_account:
-        bot_accounts["qq"] = qq_account
-        bot_accounts["webui"] = qq_account
+        primary_platform = str(global_config.bot.platform or "qq").strip().lower()
+        bot_accounts[primary_platform] = qq_account
 
     platforms_list = getattr(global_config.bot, "platforms", []) or []
     platform_accounts = parse_platform_accounts(platforms_list)
 
-    telegram_account = platform_accounts.get("tg", "") or platform_accounts.get("telegram", "")
-    if telegram_account:
-        bot_accounts["telegram"] = telegram_account
-        bot_accounts["tg"] = telegram_account
-
     for platform_name, account in platform_accounts.items():
-        if platform_name in {"tg", "telegram", "qq", "webui"}:
+        if platform_name in {"qq", "webui"}:
             continue
         bot_accounts[platform_name] = account
 
@@ -119,13 +122,23 @@ def is_bot_self(platform: str, user_id: str) -> bool:
     if not user_id_str:
         return False
 
-    bot_account = get_bot_account(normalized_platform)
-    if bot_account:
-        return user_id_str == bot_account
+    bot_accounts = get_bot_accounts(normalized_platform)
+    if bot_accounts:
+        return user_id_str in bot_accounts
 
     if normalized_platform not in _warned_unconfigured_platforms:
         _warned_unconfigured_platforms.add(normalized_platform)
         logger.warning(f"平台 {normalized_platform} 未配置机器人账号，无法判断用户 {user_id_str} 是否为机器人自己")
+    return False
+
+
+def _has_at_component_targeting_bot(message: SessionMessage, platform: str) -> bool:
+    """检查消息中的结构化 @ 组件是否直接指向当前 bot。"""
+
+    raw_message = getattr(message, "raw_message", None)
+    for component in getattr(raw_message, "components", []) or []:
+        if isinstance(component, AtComponent) and is_bot_self(platform, component.target_user_id):
+            return True
     return False
 
 
@@ -134,8 +147,7 @@ def is_mentioned_bot_in_message(message: SessionMessage) -> tuple[bool, bool, fl
     text = message.processed_plain_text or ""
     platform = str(message.platform or "").strip().lower()
 
-    # 获取当前平台对应的账号
-    current_account = get_bot_account(platform)
+    current_accounts = get_bot_accounts(platform)
 
     nickname = str(global_config.bot.nickname or "")
     alias_names = list(getattr(global_config.bot, "alias_names", []) or [])
@@ -150,14 +162,17 @@ def is_mentioned_bot_in_message(message: SessionMessage) -> tuple[bool, bool, fl
     if isinstance(add_cfg, dict):
         if add_cfg.get("at_bot") or add_cfg.get("is_mentioned"):
             is_mentioned = True
-            # 当提供数值型 is_mentioned 时，当作概率提升
-            try:
-                if add_cfg.get("is_mentioned") not in (None, ""):
-                    reply_probability = float(add_cfg.get("is_mentioned"))  # type: ignore
-            except Exception:
-                pass
+            if add_cfg.get("at_bot"):
+                is_at = True
+            # 当提供数值型 is_mentioned 时，当作概率提升；布尔提及标记只负责标记命中。
+            raw_mention_boost = add_cfg.get("is_mentioned")
+            if raw_mention_boost not in (None, "") and not isinstance(raw_mention_boost, bool):
+                reply_probability = float(raw_mention_boost)
 
-    # 2) 已经在上游设置过的 message.is_mentioned
+    # 2) 已经在上游设置过的 message.is_at / message.is_mentioned
+    if getattr(message, "is_at", False):
+        is_at = True
+        is_mentioned = True
     if getattr(message, "is_mentioned", False):
         is_mentioned = True
 
@@ -180,34 +195,43 @@ def is_mentioned_bot_in_message(message: SessionMessage) -> tuple[bool, bool, fl
         is_at = True
         is_mentioned = True
 
-    # 4) 统一的 @ 检测逻辑
-    if current_account and not is_at and not is_mentioned:
-        if platform == "qq":
-            # QQ 格式: @<name:qq_id>
-            if re.search(rf"@<(.+?):{re.escape(current_account)}>", text):
-                is_at = True
-                is_mentioned = True
-        else:
-            # 其他平台格式: @username 或 @account
-            if re.search(rf"@{re.escape(current_account)}(\b|$)", text, flags=re.IGNORECASE):
-                is_at = True
-                is_mentioned = True
+    # 4) 结构化 @ 组件检测。处理后的文本可能只剩群名片，不能依赖文本里的显示名判断。
+    if not is_at and _has_at_component_targeting_bot(message, platform):
+        is_at = True
+        is_mentioned = True
 
-    # 5) 统一的回复检测逻辑
+    # 5) 统一的 @ 检测逻辑
+    if current_accounts and not is_at and not is_mentioned:
+        for current_account in current_accounts:
+            pattern = (
+                rf"@<(.+?):{re.escape(current_account)}>"
+                if platform == "qq"
+                else rf"@{re.escape(current_account)}(\b|$)"
+            )
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                is_at = True
+                is_mentioned = True
+                break
+
+    # 6) 统一的回复检测逻辑
     if not is_mentioned:
         # 通用回复格式：包含 "(你)" 或 "（你）"
         if re.search(r"\[回复 .*?\(你\)：", text) or re.search(r"\[回复 .*?（你）：", text):
             is_mentioned = True
         # ID 形式的回复检测
-        elif current_account:
-            if re.search(rf"\[回复 (.+?)\({re.escape(current_account)}\)：(.+?)\]，说：", text):
-                is_mentioned = True
-            elif re.search(
-                rf"\[回复<(.+?)(?=:{re.escape(current_account)}>)\:{re.escape(current_account)}>：(.+?)\]，说：", text
-            ):
-                is_mentioned = True
+        elif current_accounts:
+            for current_account in current_accounts:
+                if re.search(rf"\[回复 (.+?)\({re.escape(current_account)}\)：(.+?)\]，说：", text):
+                    is_mentioned = True
+                    break
+                if re.search(
+                    rf"\[回复<(.+?)(?=:{re.escape(current_account)}>)\:{re.escape(current_account)}>：(.+?)\]，说：",
+                    text,
+                ):
+                    is_mentioned = True
+                    break
 
-    # 6) 名称/别名 提及（去除 @/回复标记后再匹配）
+    # 7) 名称/别名 提及（去除 @/回复标记后再匹配）
     if not is_mentioned and keywords:
         msg_content = text
         # 去除各种 @ 与 回复标记，避免误判
@@ -220,11 +244,12 @@ def is_mentioned_bot_in_message(message: SessionMessage) -> tuple[bool, bool, fl
                 is_mentioned = True
                 break
 
-    # 7) 概率设置
-    if is_at and getattr(global_config.chat, "inevitable_at_reply", 1):
+    # 8) 概率设置
+    reply_timing_config = global_config.chat.reply_timing
+    if is_at and reply_timing_config.inevitable_at_reply:
         reply_probability = 1.0
         logger.debug("被@，回复概率设置为100%")
-    elif is_mentioned and getattr(global_config.chat, "mentioned_bot_reply", 1):
+    elif is_mentioned and reply_timing_config.mentioned_bot_reply:
         reply_probability = max(reply_probability, 1.0)
         logger.debug("被提及，回复概率设置为100%")
 
@@ -434,6 +459,70 @@ def split_into_sentences_w_remove_punctuation(text: str) -> list[str]:
     return final_sentences
 
 
+def merge_sentences_to_max_count(sentences: list[str], max_count: int) -> list[str]:
+    """按顺序将分句合并到指定条数以内。"""
+
+    if len(sentences) <= max_count:
+        return sentences
+
+    merged_sentences: list[str] = []
+    sentence_count = len(sentences)
+    start_index = 0
+    for group_index in range(max_count):
+        remaining_sentences = sentence_count - start_index
+        remaining_groups = max_count - group_index
+        group_size = (remaining_sentences + remaining_groups - 1) // remaining_groups
+        merged_sentences.append("".join(sentences[start_index : start_index + group_size]))
+        start_index += group_size
+
+    return merged_sentences
+
+
+def _merge_processed_segments_to_max_count(
+    segments: list[ProcessedResponseSegment],
+    max_count: int,
+) -> list[ProcessedResponseSegment]:
+    """压缩回复段数量，并优先让需要引用的纠正内容保持在消息开头。"""
+
+    if len(segments) <= max_count:
+        return segments
+    if max_count <= 0:
+        return []
+
+    segment_count = len(segments)
+    required_starts = [index for index, segment in enumerate(segments) if index > 0 and segment.quote_previous]
+    group_starts = {0, *required_starts[: max_count - 1]}
+
+    # 在保留纠正消息边界后，沿用原来的均匀分组策略填充其余可用分组。
+    evenly_spaced_starts: list[int] = []
+    start_index = 0
+    for group_index in range(max_count):
+        remaining_segments = segment_count - start_index
+        remaining_groups = max_count - group_index
+        group_size = (remaining_segments + remaining_groups - 1) // remaining_groups
+        evenly_spaced_starts.append(start_index)
+        start_index += group_size
+
+    for candidate_start in evenly_spaced_starts:
+        if len(group_starts) >= max_count:
+            break
+        group_starts.add(candidate_start)
+
+    sorted_starts = sorted(group_starts)
+    merged_segments: list[ProcessedResponseSegment] = []
+    for group_index, group_start in enumerate(sorted_starts):
+        group_end = sorted_starts[group_index + 1] if group_index + 1 < len(sorted_starts) else segment_count
+        group = segments[group_start:group_end]
+        merged_segments.append(
+            ProcessedResponseSegment(
+                text="".join(segment.text for segment in group),
+                quote_previous=group[0].quote_previous,
+            )
+        )
+
+    return merged_segments
+
+
 def random_remove_punctuation(text: str) -> str:
     """随机处理标点符号，模拟人类打字习惯
 
@@ -475,9 +564,15 @@ def _get_random_default_reply() -> str:
     return random.choice(default_replies)
 
 
-def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese_typo: bool = True) -> list[str]:
+def process_llm_response_segments(
+    text: str,
+    enable_splitter: bool = True,
+    enable_chinese_typo: bool = True,
+) -> list[ProcessedResponseSegment]:
+    """处理回复文本，并保留错别字纠正消息的引用提示。"""
+
     if not global_config.response_post_process.enable_response_post_process:
-        return [text]
+        return [ProcessedResponseSegment(text)]
 
     # 先保护颜文字
     if global_config.response_splitter.enable_kaomoji_protection:
@@ -493,17 +588,18 @@ def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese
     cleaned_text = pattern.sub("", protected_text)
 
     if cleaned_text == "":
-        return ["呃呃"]
+        return [ProcessedResponseSegment("呃呃")]
 
     logger.debug(f"{text}去除括号处理后的文本: {cleaned_text}")
 
     # 对清理后的文本进行进一步处理
     max_length = global_config.response_splitter.max_length * 2
     max_sentence_num = global_config.response_splitter.max_sentence_num
+    max_split_num = global_config.response_splitter.max_split_num
     # 如果基本上是中文，则进行长度过滤
     if get_western_ratio(cleaned_text) < 0.1 and len(cleaned_text) > max_length:
         logger.warning(f"回复过长 ({len(cleaned_text)} 字符)，返回默认回复")
-        return [_get_random_default_reply()]
+        return [ProcessedResponseSegment(_get_random_default_reply())]
 
     typo_generator = ChineseTypoGenerator(
         error_rate=global_config.chinese_typo.error_rate,
@@ -517,30 +613,41 @@ def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese
     else:
         split_sentences = [cleaned_text]
 
-    sentences: List[str] = []
+    segments: list[ProcessedResponseSegment] = []
     for sentence in split_sentences:
         if global_config.chinese_typo.enable and enable_chinese_typo:
             typoed_text, typo_corrections = typo_generator.create_typo_sentence(sentence)
             if typo_corrections:
                 # 50%概率新增正确字/词，50%概率用正确分句替换错别字分句
                 if random.random() < 0.5:
-                    sentences.append(typoed_text)
-                    sentences.append(typo_corrections)
+                    quote_previous = (
+                        global_config.chinese_typo.enable_correction_quote
+                        and random.random() < global_config.chinese_typo.correction_quote_probability
+                    )
+                    segments.append(ProcessedResponseSegment(typoed_text))
+                    segments.append(
+                        ProcessedResponseSegment(
+                            typo_corrections,
+                            quote_previous=quote_previous,
+                        )
+                    )
                 else:
                     # 用正确的分句替换错别字分句
-                    sentences.append(sentence)
+                    segments.append(ProcessedResponseSegment(sentence))
             else:
-                sentences.append(typoed_text)
+                segments.append(ProcessedResponseSegment(typoed_text))
         else:
-            sentences.append(sentence)
+            segments.append(ProcessedResponseSegment(sentence))
 
-    if len(sentences) > max_sentence_num:
+    if len(segments) > max_sentence_num:
         if global_config.response_splitter.enable_overflow_return_all:
-            logger.warning(f"分割后消息数量过多 ({len(sentences)} 条)，直接返回原文")
-            sentences = [cleaned_text]
+            logger.warning(f"分割后消息数量过多 ({len(segments)} 条)，直接返回原文")
+            segments = [ProcessedResponseSegment(cleaned_text)]
         else:
-            logger.warning(f"分割后消息数量过多 ({len(sentences)} 条)，返回默认回复")
-            return [_get_random_default_reply()]
+            logger.warning(f"分割后消息数量过多 ({len(segments)} 条)，返回默认回复")
+            return [ProcessedResponseSegment(_get_random_default_reply())]
+
+    segments = _merge_processed_segments_to_max_count(segments, max_split_num)
 
     # if extracted_contents:
     #     for content in extracted_contents:
@@ -548,9 +655,29 @@ def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese
 
     # 在所有句子处理完毕后，对包含占位符的列表进行恢复
     if global_config.response_splitter.enable_kaomoji_protection:
-        sentences = recover_kaomoji(sentences, kaomoji_mapping)
+        recovered_sentences = recover_kaomoji([segment.text for segment in segments], kaomoji_mapping)
+        segments = [
+            ProcessedResponseSegment(
+                text=recovered_text,
+                quote_previous=segment.quote_previous,
+            )
+            for segment, recovered_text in zip(segments, recovered_sentences, strict=True)
+        ]
 
-    return sentences
+    return segments
+
+
+def process_llm_response(text: str, enable_splitter: bool = True, enable_chinese_typo: bool = True) -> list[str]:
+    """处理回复文本，并返回兼容旧调用链的纯文本列表。"""
+
+    return [
+        segment.text
+        for segment in process_llm_response_segments(
+            text,
+            enable_splitter=enable_splitter,
+            enable_chinese_typo=enable_chinese_typo,
+        )
+    ]
 
 
 def calculate_typing_time(
@@ -588,7 +715,7 @@ def calculate_typing_time(
     if is_emoji:
         total_time = 1
 
-    typing_speed = global_config.chat.typing_speed
+    typing_speed = global_config.response_post_process.typing_speed
     if typing_speed <= 0:
         return 0
     total_time *= typing_speed
@@ -634,8 +761,11 @@ def protect_kaomoji(sentence):
     kaomoji_matches = kaomoji_pattern.findall(sentence)
     placeholder_to_kaomoji = {}
 
-    for idx, match in enumerate(kaomoji_matches):
+    for match in kaomoji_matches:
         kaomoji = match[0] or match[1]
+        if kaomoji.startswith("[表情包") and kaomoji.endswith("]"):
+            continue
+        idx = len(placeholder_to_kaomoji)
         placeholder = f"__KAOMOJI_{idx}__"
         sentence = sentence.replace(kaomoji, placeholder, 1)
         placeholder_to_kaomoji[placeholder] = kaomoji

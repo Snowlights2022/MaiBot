@@ -225,6 +225,8 @@ class RegisterPluginPayload(BaseModel):
     """插件 ID"""
     plugin_version: str = Field(default="1.0.0", description="插件版本")
     """插件版本"""
+    plugin_type: str = Field(default="extension", description="插件类型")
+    """插件类型"""
     components: List[ComponentDeclaration] = Field(default_factory=list, description="组件列表")
     """组件列表"""
     llm_providers: List[LLMProviderDeclaration] = Field(default_factory=list, description="LLM Provider 声明列表")
@@ -248,6 +250,8 @@ class BootstrapPluginPayload(BaseModel):
     """插件 ID"""
     plugin_version: str = Field(default="1.0.0", description="插件版本")
     """插件版本"""
+    plugin_type: str = Field(default="extension", description="插件类型")
+    """插件类型"""
     capabilities_required: List[str] = Field(default_factory=list, description="所需能力列表")
     """所需能力列表"""
 
@@ -320,6 +324,8 @@ class RunnerReadyPayload(BaseModel):
     """已完成初始化的插件列表"""
     failed_plugins: List[str] = Field(default_factory=list, description="初始化失败的插件列表")
     """初始化失败的插件列表"""
+    failed_plugin_reasons: Dict[str, str] = Field(default_factory=dict, description="初始化失败的插件及原因")
+    """初始化失败的插件及原因"""
     inactive_plugins: List[str] = Field(default_factory=list, description="当前因禁用或依赖不可用而未激活的插件列表")
     """当前因禁用或依赖不可用而未激活的插件列表"""
 
@@ -399,6 +405,28 @@ class UnregisterPluginPayload(BaseModel):
     """插件 ID"""
     reason: str = Field(default="manual", description="注销原因")
     """注销原因"""
+
+
+class UnloadPluginsPayload(BaseModel):
+    """批量卸载插件请求载荷。"""
+
+    plugin_ids: List[str] = Field(default_factory=list, description="目标插件 ID 列表")
+    """目标插件 ID 列表"""
+    reason: str = Field(default="manual", description="卸载原因")
+    """卸载原因"""
+
+
+class UnloadPluginsResultPayload(BaseModel):
+    """批量卸载插件结果载荷。"""
+
+    success: bool = Field(description="请求的插件是否全部卸载成功")
+    """请求的插件是否全部卸载成功"""
+    requested_plugin_ids: List[str] = Field(default_factory=list, description="请求卸载的插件 ID")
+    """请求卸载的插件 ID"""
+    unloaded_plugins: List[str] = Field(default_factory=list, description="已卸载的插件 ID")
+    """已卸载的插件 ID"""
+    failed_plugins: Dict[str, str] = Field(default_factory=dict, description="卸载失败原因")
+    """卸载失败原因"""
 
 
 class ReloadPluginPayload(BaseModel):
